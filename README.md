@@ -1,8 +1,6 @@
-Got it. Here's a README.md file suitable for GitHub, explaining the project and specifying library placement for someone who only gets the src, include, and shaders directories.
-
 # Simple Voxel Engine (Minecraft Clone Base)
 
-This project is a basic C++ voxel engine built using OpenGL, GLFW, and GLM, demonstrating fundamental concepts like chunk loading, meshing, and rendering, inspired by Minecraft.
+This **vibecode Gemini 2.5 Pro Preview 03-25** project is a basic C++ voxel engine built using OpenGL, GLFW, and GLM, demonstrating fundamental concepts like chunk loading, meshing, and rendering, inspired by Minecraft.
 
 ## Features (Current)
 
@@ -23,59 +21,6 @@ This project is a basic C++ voxel engine built using OpenGL, GLFW, and GLM, demo
     *   **F3:** Toggle display of world grid and camera orientation axes.
     *   **Console Output:** Displays camera position and targeted block coordinates.
 
-## Project Structure
-
-
-your_project_root/
-├── src/ # C++ Source files (.cpp)
-│ ├── Application.cpp
-│ ├── Camera.cpp
-│ ├── Chunk.cpp
-│ ├── main.cpp
-│ ├── Mesh.cpp
-│ ├── Renderer.cpp
-│ ├── Shader.cpp
-│ ├── Window.cpp
-│ ├── World.cpp
-│ ├── WorldGenerator.cpp
-│ └── WorldStorage.cpp
-├── include/ # C++ Header files (.h)
-│ ├── Application.h
-│ ├── Block.h
-│ ├── Camera.h
-│ ├── Chunk.h
-│ ├── Mesh.h
-│ ├── MeshData.h
-│ ├── Renderer.h
-│ ├── Shader.h
-│ ├── Utils.h # Optional helper functions (like readFile)
-│ ├── Window.h
-│ ├── World.h
-│ ├── WorldGenerator.h
-│ └── WorldStorage.h
-├── shaders/ # GLSL Shader files
-│ ├── basic.frag
-│ ├── basic.vert
-│ ├── line.frag
-│ └── line.vert
-├── worlds/ # Directory for saving world files (created automatically)
-│ └── myworld.world # Example world file (created on first run if not present)
-│
-├── third_party/ # <--- CREATE THIS FOLDER for external libraries
-│ ├── glm/ # <--- PLACE GLM headers HERE
-│ │ └── glm/ # (Contains mat4.hpp, vec3.hpp etc.)
-│ │ └── ...
-│ ├── glad/ # <--- OPTION 1: PLACE GLAD source/include HERE (or other loader)
-│ │ ├── include/
-│ │ │ └── glad/
-│ │ │ └── glad.h
-│ │ └── src/
-│ │ └── glad.c
-│ └── FastNoiseLite/ # <--- PLACE FastNoiseLite.h HERE (Optional, if using noise)
-│ └── FastNoiseLite.h
-│
-├── CMakeLists.txt # Build script (Example provided below)
-└── README.md # This file
 
 ## Dependencies & Setup
 
