@@ -305,6 +305,24 @@ void Engine::processInput(float /*deltaTime*/) {
 
 // --- Обновление Состояния ---
 void Engine::update(float deltaTime) {
+    // 1. Рассчитываем целевой блок для подсветки
+    calculateTargetBlock();
+
+    // 2. Вывод координат (можно закомментировать)
+    if (camera && world) {
+        // ... (логика вывода координат, можно использовать this->highlightedBlock) ...
+        static float timeSincePrint = 0.0f; const float printInterval = 0.5f;
+        timeSincePrint += deltaTime;
+        if (timeSincePrint >= printInterval) {
+            timeSincePrint = 0.0f;
+            std::cout << std::fixed << std::setprecision(2)
+                << "Cam Pos: X=" << camera->Position.x << " Y=" << camera->Position.y << " Z=" << camera->Position.z;
+            if (isBlockHighlighted) { // Выводим только если блок подсвечен
+                std::cout << " | Target Block: (" << highlightedBlock.x << "," << highlightedBlock.y << "," << highlightedBlock.z << ")";
+            }
+            std::cout << std::endl;
+        }
+    }
     // 1. Обновление видимости чанков и постановка в очередь мешинга
     if (chunkManager && camera && renderer && world) {
         // Передаем renderer для использования isAABBInFrustum
@@ -343,21 +361,30 @@ void Engine::update(float deltaTime) {
 void Engine::render() {
     if (!isInitialized || !renderer || !world || !camera || !blockShader || !lineShader) return;
 
-    renderer->prepareFrame(); // Очистка
+    renderer->prepareFrame();
 
     glm::mat4 view = camera->getViewMatrix();
     glm::mat4 projection = camera->getProjectionMatrix();
     std::array<Plane, 6> frustumPlanes = camera->getFrustumPlanes();
 
-    // Рендеринг сетки (используем публичный флаг Engine::showGrid)
+    // Рендеринг сетки
     if (showGrid && gridVAO != 0) {
         renderer->renderGrid(*lineShader, gridVAO, gridVertexCount, view, projection);
     }
 
-    // Рендеринг мира
-    renderer->renderWorld(*world, *camera, *blockShader, frustumPlanes);
+    // Рендеринг мира - передаем информацию о подсветке
+    if (blockShader) {
+        // Устанавливаем uniforms подсветки ПЕРЕД вызовом renderWorld
+        blockShader->use(); // Активируем шейдер блоков
+        blockShader->setBool("highlightActive", isBlockHighlighted);
+        if (isBlockHighlighted) {
+            blockShader->setVec3i("highlightedBlockPos", highlightedBlock); // Используем setVec3i для ivec3
+        }
+        // Вызываем рендеринг мира (он внутри снова сделает use(), но uniforms уже установлены)
+        renderer->renderWorld(*world, *camera, *blockShader, frustumPlanes);
+    }
 
-    // Рендеринг осей (используем публичный флаг Engine::showDebugAxes)
+    // Рендеринг отладочных осей
     if (showDebugAxes && debugAxesVAO != 0) {
         renderer->renderDebugInfo(*camera, *lineShader, debugAxesVAO, debugAxesVertexCount);
     }
@@ -517,5 +544,37 @@ void Engine::onFramebufferResize(int width, int height) {
 void Engine::onMouseMovement(double xpos, double ypos) {
     if (inputManager) { // Делегируем InputManager
         inputManager->handleMouseMovement(xpos, ypos);
+    }
+}
+
+void Engine::calculateTargetBlock() {
+    if (!camera || !world) {
+        isBlockHighlighted = false;
+        return;
+    }
+
+    const float reachDistance = 4.5f; // Дальность "прицеливания"
+    glm::vec3 rayPos = camera->Position;
+    glm::vec3 step = glm::normalize(camera->Front) * 0.05f; // Шаг луча меньше
+    bool found = false;
+
+    for (float dist = 0.0f; dist < reachDistance; dist += glm::length(step)) {
+        int currentX = static_cast<int>(std::floor(rayPos.x));
+        int currentY = static_cast<int>(std::floor(rayPos.y));
+        int currentZ = static_cast<int>(std::floor(rayPos.z));
+
+        BlockType currentBlock = world->getBlockType(currentX, currentY, currentZ);
+
+        if (isBlockVisible(currentBlock)) { // Нашли первый непрозрачный блок
+            highlightedBlock = glm::ivec3(currentX, currentY, currentZ);
+            isBlockHighlighted = true;
+            found = true;
+            break; // Выходим, как только нашли
+        }
+        rayPos += step; // Двигаем луч вперед
+    }
+
+    if (!found) {
+        isBlockHighlighted = false; // Ничего не нашли в пределах досягаемости
     }
 }

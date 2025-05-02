@@ -42,6 +42,9 @@ public:
 
     void unloadAllMeshes(); // Без изменений
 
+    bool setBlockType(int worldX, int worldY, int worldZ, BlockType type);
+
+
 private:
     int worldSizeX, worldSizeY, worldSizeZ;
     int chunksX, chunksZ;

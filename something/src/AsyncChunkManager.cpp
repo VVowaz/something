@@ -148,6 +148,9 @@ void AsyncChunkManager::uploadReadyMeshes(World& world) {
 
 // Рабочая функция потока мешинга
 void AsyncChunkManager::workerLoop() {
+    unsigned int numThreads = std::thread::hardware_concurrency();
+    if (numThreads > 1) numThreads -= 1; 
+    if (numThreads == 0) numThreads = 1;
     std::cout << "Mesh worker thread loop started." << std::endl;
     while (true) {
         glm::ivec2 chunkCoordToProcess;

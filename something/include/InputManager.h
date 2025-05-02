@@ -44,8 +44,15 @@ private:
     Camera* activeCamera = nullptr; // Сохраняем указатель на активную камеру
 
     // Метод для обработки клавиатуры
-    void processKeyboardInput(Engine& app, Camera& camera, float deltaTime);
 
     // Метод для обработки переключения F3
     void processF3Toggle(Engine& app);
+
+    // *** НОВОЕ: Состояние кнопок мыши для однократного срабатывания ***
+    bool leftMouseButtonPressed = false;
+    bool rightMouseButtonPressed = false;
+
+    // Приватные методы
+    void processKeyboardInput(Camera& camera, float deltaTime); // Убрали app
+    void processMouseInput(Engine& app, Camera& camera);  // <<<--- Новый метод
 };

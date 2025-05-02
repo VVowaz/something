@@ -1,25 +1,25 @@
 #version 330 core
-layout (location = 0) in vec3 aPos;   // Позиция вершины
-layout (location = 1) in vec3 aNormal; // Нормаль вершины
-layout (location = 2) in vec2 aTexCoords; // Текстурные координаты
+layout (location = 0) in vec3 aPos;   // Локальная позиция вершины в меше чанка
+layout (location = 1) in vec3 aNormal;
+layout (location = 2) in vec2 aTexCoords;
 
-out vec3 FragPos;       // Позиция фрагмента в мировых координатах (для освещения)
-out vec3 Normal;        // Нормаль (для освещения)
-out vec2 TexCoords;     // Текстурные координаты
+out vec3 FragPos;       // Позиция фрагмента в МИРОВЫХ координатах
+out vec3 Normal;
+out vec2 TexCoords;
 
-uniform mat4 model;
+uniform mat4 model;      // Матрица модели (перенос чанка в мир)
 uniform mat4 view;
 uniform mat4 projection;
 
 void main()
 {
-    FragPos = vec3(model * vec4(aPos, 1.0)); // Позиция в мировых координатах
-    // Нормаль трансформируем с помощью нормальной матрицы (инверсно-транспонированной model)
-    // Для простоты пока просто передаем локальную нормаль (работает для uniform масштаба)
-    Normal = mat3(transpose(inverse(model))) * aNormal; // Правильный способ
-    // Normal = aNormal; // Упрощенный способ (неправильно при non-uniform scale)
+    // Трансформируем локальную позицию вершины в мировые координаты
+    FragPos = vec3(model * vec4(aPos, 1.0));
+    // Трансформируем нормаль (правильно)
+    Normal = mat3(transpose(inverse(model))) * aNormal;
+    // Передаем текстурные координаты
+    TexCoords = aTexCoords;
 
-    TexCoords = aTexCoords; // Передаем текстурные координаты
-
-    gl_Position = projection * view * model * vec4(aPos, 1.0); // Позиция в clip space
+    // Вычисляем позицию в пространстве отсечения
+    gl_Position = projection * view * vec4(FragPos, 1.0); // Используем уже посчитанный FragPos
 }

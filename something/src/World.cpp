@@ -116,3 +116,61 @@ void World::populate(WorldDataType&& worldData) {
     // Вызываем внутреннее заполнение, передавая const ссылку на локальные данные
     populateChunksInternal(localWorldData);
 }
+
+// *** НОВАЯ РЕАЛИЗАЦИЯ: setBlockType ***
+bool World::setBlockType(int worldX, int worldY, int worldZ, BlockType type) {
+    // 1. Проверка выхода за границы по высоте
+    if (worldY < 0 || worldY >= worldSizeY) {
+        // std::cerr << "Warning: Attempt to set block outside world Y bounds: " << worldY << std::endl;
+        return false;
+    }
+
+    // 2. Находим целевой чанк (не const версия)
+    Chunk* targetChunk = getChunk(worldX, worldZ);
+
+    if (targetChunk) {
+        // 3. Конвертируем мировые координаты в локальные
+        glm::ivec3 localCoords = worldToLocalCoords(worldX, worldY, worldZ);
+
+        // 4. Получаем ТЕКУЩИЙ тип блока
+        BlockType currentType = targetChunk->getBlock(localCoords.x, localCoords.y, localCoords.z);
+
+        // 5. Устанавливаем новый тип, если он отличается
+        if (currentType != type) {
+            targetChunk->setBlock(localCoords.x, localCoords.y, localCoords.z, type);
+            // setBlock внутри Chunk уже помечает needsMeshUpdate = true
+
+            // *** 6. Пометка СОСЕДНИХ чанков для обновления (ВАЖНО!) ***
+            // Если блок находится на границе чанка, нужно перестроить меш и соседнего чанка.
+            int localX = localCoords.x;
+            int localZ = localCoords.z;
+            bool onEdgeX_Neg = (localX == 0);
+            bool onEdgeX_Pos = (localX == Chunk::CHUNK_WIDTH - 1);
+            bool onEdgeZ_Neg = (localZ == 0);
+            bool onEdgeZ_Pos = (localZ == Chunk::CHUNK_DEPTH - 1);
+
+            // Проверяем соседей по X
+            if (onEdgeX_Neg) { Chunk* neighbor = getChunk(worldX - 1, worldZ); if (neighbor) neighbor->markForMeshUpdate(); }
+            if (onEdgeX_Pos) { Chunk* neighbor = getChunk(worldX + 1, worldZ); if (neighbor) neighbor->markForMeshUpdate(); }
+            // Проверяем соседей по Z
+            if (onEdgeZ_Neg) { Chunk* neighbor = getChunk(worldX, worldZ - 1); if (neighbor) neighbor->markForMeshUpdate(); }
+            if (onEdgeZ_Pos) { Chunk* neighbor = getChunk(worldX, worldZ + 1); if (neighbor) neighbor->markForMeshUpdate(); }
+            // Проверяем соседей по диагонали (тоже влияют на стыки граней)
+            if (onEdgeX_Neg && onEdgeZ_Neg) { Chunk* neighbor = getChunk(worldX - 1, worldZ - 1); if (neighbor) neighbor->markForMeshUpdate(); }
+            if (onEdgeX_Neg && onEdgeZ_Pos) { Chunk* neighbor = getChunk(worldX - 1, worldZ + 1); if (neighbor) neighbor->markForMeshUpdate(); }
+            if (onEdgeX_Pos && onEdgeZ_Neg) { Chunk* neighbor = getChunk(worldX + 1, worldZ - 1); if (neighbor) neighbor->markForMeshUpdate(); }
+            if (onEdgeX_Pos && onEdgeZ_Pos) { Chunk* neighbor = getChunk(worldX + 1, worldZ + 1); if (neighbor) neighbor->markForMeshUpdate(); }
+
+
+            return true; // Блок изменен
+        }
+        else {
+            return false; // Тип не изменился
+        }
+    }
+    else {
+        // Попытка установить блок вне загруженных/существующих чанков
+        // std::cerr << "Warning: Attempt to set block outside world X/Z bounds: " << worldX << "," << worldZ << std::endl;
+        return false;
+    }
+}

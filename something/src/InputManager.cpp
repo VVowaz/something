@@ -1,9 +1,12 @@
 #include "InputManager.h"
-#include "Engine.h" // Включаем для доступа к флагам showGrid/showDebugAxes
-#include "Camera.h"      // Включаем для CameraMovement и методов камеры
-#include <GLFW/glfw3.h>  // Включаем для констант GLFW (GLFW_KEY_*, GLFW_PRESS, etc.)
-#include <iostream>      // Для вывода отладки F3
-
+#include "Engine.h"
+#include "Camera.h"
+#include "World.h"   // <<<--- Включаем для вызова world->setBlockType
+#include "Chunk.h"   // <<<--- Включаем для Chunk::CHUNK_HEIGHT и т.д. (если нужно)
+#include "Block.h"   // <<<--- Включаем для BlockType
+#include <GLFW/glfw3.h>
+#include <iostream>
+#include <cmath>    // Для floor
 // --- Конструктор ---
 InputManager::InputManager(GLFWwindow* glfwWin, int windowWidth, int windowHeight)
     : window(glfwWin),
@@ -32,7 +35,8 @@ void InputManager::processInput(Engine& app, Camera& camera, float deltaTime) {
     // glfwPollEvents(); // Этот вызов лучше оставить в главном цикле Application::run
 
     // Обрабатываем нажатия клавиш для движения камеры
-    processKeyboardInput(app, camera, deltaTime);
+    processKeyboardInput(camera, deltaTime);
+    processMouseInput(app, camera);
 
     // Обрабатываем нажатие F3 для переключения отладки
     processF3Toggle(app);
@@ -44,7 +48,7 @@ void InputManager::processInput(Engine& app, Camera& camera, float deltaTime) {
 }
 
 // --- Обработка Клавиатуры ---
-void InputManager::processKeyboardInput(Engine& /*app*/, Camera& camera, float deltaTime) {
+void InputManager::processKeyboardInput(Camera& camera, float deltaTime) {
     // Movement
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
         camera.processKeyboard(CameraMovement::FORWARD, deltaTime);
@@ -98,4 +102,96 @@ void InputManager::handleMouseMovement(double xpos, double ypos) {
 
     // Передаем смещение в камеру
     activeCamera->processMouseMovement(static_cast<float>(xoffset), static_cast<float>(yoffset));
+}
+
+void InputManager::processMouseInput(Engine& engine, Camera& camera) {
+    World* worldPtr = engine.getWorldPtr();
+    if (!worldPtr) return;
+    World& world = *worldPtr;
+
+    // --- Левая кнопка (Ломание Подсвеченного) ---
+    int lmbState = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT);
+    if (lmbState == GLFW_PRESS && !leftMouseButtonPressed) {
+        leftMouseButtonPressed = true;
+        if (engine.isBlockHighlighted) {
+            glm::ivec3 blockToBreak = engine.highlightedBlock;
+            std::cout << "LMB Click: Breaking block at (" << blockToBreak.x << "," << blockToBreak.y << "," << blockToBreak.z << ")" << std::endl;
+            world.setBlockType(blockToBreak.x, blockToBreak.y, blockToBreak.z, BlockType::Air);
+        }
+        else {
+            // std::cout << "LMB Click: No block highlighted." << std::endl;
+        }
+        // Сбрасываем флаг сразу после обработки однократного нажатия
+        // leftMouseButtonPressed = false; // Или оставляем до RELEASE, как было
+    }
+    else if (lmbState == GLFW_RELEASE) {
+        leftMouseButtonPressed = false;
+    }
+
+    // --- Правая кнопка (Установка Рядом с Подсвеченным) ---
+    int rmbState = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT);
+    if (rmbState == GLFW_PRESS && !rightMouseButtonPressed) {
+        rightMouseButtonPressed = true;
+
+        if (engine.isBlockHighlighted) {
+            glm::ivec3 targetBlock = engine.highlightedBlock; // Блок, на который смотрим
+
+            // --- Определение грани и соседней ячейки ---
+            glm::vec3 blockCenter = glm::vec3(targetBlock) + 0.5f;
+            glm::vec3 viewDirection = glm::normalize(blockCenter - camera.Position);
+
+            const glm::vec3 faceNormals[] = {
+                { 0.0f,  0.0f,  1.0f}, { 0.0f,  0.0f, -1.0f}, {-1.0f,  0.0f,  0.0f},
+                { 1.0f,  0.0f,  0.0f}, { 0.0f, -1.0f,  0.0f}, { 0.0f,  1.0f,  0.0f}
+            };
+            // Смещения координат для каждой нормали (для получения соседа)
+            const glm::ivec3 neighbourOffsets[] = {
+                { 0,  0,  -1}, { 0,  0, 1}, {1,  0,  0},
+                { -1,  0,  0}, { 0, 1,  0}, { 0,  -1,  0}
+            };
+
+            float maxDot = -2.0f;
+            int bestFaceIndex = -1;
+            for (int i = 0; i < 6; ++i) {
+                float currentDot = glm::dot(viewDirection, faceNormals[i]);
+                if (currentDot > maxDot) {
+                    maxDot = currentDot;
+                    bestFaceIndex = i;
+                }
+            }
+            // --- Грань и смещение определены ---
+
+            if (bestFaceIndex != -1) {
+                // Вычисляем координаты ЯЧЕЙКИ, КУДА СТАВИТЬ БЛОК
+                glm::ivec3 placeCoords = targetBlock + neighbourOffsets[bestFaceIndex]; // <<<--- Смещаемся на 1 блок по нормали
+
+                std::cout << "RMB Click: Target block (" << targetBlock.x << "," << targetBlock.y << "," << targetBlock.z << "), "
+                    << "Face Index: " << bestFaceIndex << ". Attempting to place Stone at ("
+                    << placeCoords.x << "," << placeCoords.y << "," << placeCoords.z << ")" << std::endl;
+
+                // Проверяем, не совпадает ли место установки с камерой
+                int camBlockX = static_cast<int>(std::floor(camera.Position.x));
+                int camBlockY = static_cast<int>(std::floor(camera.Position.y));
+                int camBlockZ = static_cast<int>(std::floor(camera.Position.z));
+
+                if (placeCoords.x == camBlockX && placeCoords.y == camBlockY && placeCoords.z == camBlockZ) {
+                    std::cout << "Placement failed: Cannot place block inside camera." << std::endl;
+                }
+                else {
+                    world.setBlockType(placeCoords.x, placeCoords.y, placeCoords.z, BlockType::Stone);
+                }
+            }
+            else {
+                std::cout << "Placement failed: Could not determine placement face." << std::endl;
+            }
+
+        }
+        else {
+            // std::cout << "RMB Click: No block highlighted." << std::endl;
+        }
+        // rightMouseButtonPressed = false; // Сброс флага? Или ждать RELEASE? Оставим до RELEASE
+    }
+    else if (rmbState == GLFW_RELEASE) {
+        rightMouseButtonPressed = false;
+    }
 }

@@ -46,6 +46,8 @@ public: // <<<--- Сделаем публичным для простоты доступа менеджеров
     bool showGrid = false;
     bool showDebugAxes = false;
 
+    World* getWorldPtr() { return world.get(); }
+
 private:
     // --- Основные Компоненты и Менеджеры ---
     std::unique_ptr<Window> window;
@@ -112,4 +114,11 @@ private:
     // --- Колбэки Окна ---
     void onFramebufferResize(int width, int height);
     void onMouseMovement(double xpos, double ypos); // Делегирует InputManager
+
+    friend class InputManager;
+
+    glm::ivec3 highlightedBlock = glm::ivec3(0); // Инициализируем нулями
+    bool isBlockHighlighted = false;             // Флаг, есть ли вообще подсвеченный блок
+
+    void calculateTargetBlock();
 };

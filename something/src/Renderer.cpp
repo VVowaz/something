@@ -63,34 +63,32 @@ void Renderer::renderWorld(World& world, const Camera& camera, Shader& blockShad
     blockShader.setMat4("projection", projection);
     blockShader.setMat4("view", view);
 
-    int chunksRendered = 0;
-    int chunksTotal = 0;
-    // Получаем НЕ-const доступ, но используем как const внутри
-    for (auto const& [chunkPos, chunkPtr] : world.getChunks()) { // Можно const&
+    int chunksRendered = 0; int chunksTotal = 0;
+    for (auto& [chunkPos, chunkPtr] : world.getChunks()) {
         if (!chunkPtr) continue;
         chunksTotal++;
 
-        // 1. Frustum Culling
-        if (!isAABBInFrustum(chunkPtr->getAABB(), frustumPlanes)) {
-            continue;
-        }
+        // Frustum Culling
+        AABB chunkBox = chunkPtr->getAABB();
+        if (!isAABBInFrustum(chunkBox, frustumPlanes)) { continue; }
 
-        // 2. Получение и отрисовка меша (НЕ ГЕНЕРИРУЕМ ЗДЕСЬ)
-        const Mesh* chunkMesh = chunkPtr->getMesh(); // Просто получаем меш
+        // Получение и отрисовка меша
+        const Mesh* chunkMesh = chunkPtr->getMesh();
         if (chunkMesh && chunkMesh->isValid()) {
+            // Устанавливаем ТОЛЬКО матрицу model для этого чанка
             glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(chunkPtr->getMinWorldPos()));
-            blockShader.setMat4("model", model);
-            chunkMesh->draw(); // Рисуем готовый меш
+            blockShader.setMat4("model", model); // Устанавливаем модель
+
+            // --- Цвет блока теперь определяется полностью в шейдере ---
+            // blockShader.setVec3("objectColor", ...); // Больше не нужно
+
+            chunkMesh->draw(); // Рисуем меш чанка
             chunksRendered++;
         }
     }
 
-    // Отладочный вывод
-    static float timeSincePrint = 0.0f; timeSincePrint += 0.016f;
-    if (timeSincePrint > 1.0f) {
-        std::cout << "Renderer: Rendered " << chunksRendered << " / " << chunksTotal << " chunk meshes this frame." << std::endl;
-        timeSincePrint = 0.0f;
-    }
+    // Отладочный вывод (без изменений)
+    // static float timeSincePrint...
 
     GLenum err; while ((err = glGetError()) != GL_NO_ERROR) { /*...*/ }
 }

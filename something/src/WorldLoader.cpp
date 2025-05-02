@@ -34,6 +34,8 @@ std::unique_ptr<World> WorldLoader::loadOrCreateWorld() {
     WorldDataStructure worldData; // Здесь будут данные
     bool needsGeneration = false;
 
+    int razmer = 5;
+
     // 1. Пытаемся загрузить мир
     if (storage->worldExists(worldName)) {
         std::cout << "WorldLoader: Loading existing world '" << worldName << "'..." << std::endl;
@@ -44,7 +46,7 @@ std::unique_ptr<World> WorldLoader::loadOrCreateWorld() {
             std::cerr << "WorldLoader: Failed to load valid data from existing world file. Will generate a new world." << std::endl;
             needsGeneration = true;
             // Устанавливаем размеры по умолчанию для генерации
-            worldWidth = 64; worldHeight = 50; worldDepth = 64;
+            worldWidth = 16* razmer; worldHeight = 50; worldDepth = 16 * razmer;
         }
         else {
             std::cout << "WorldLoader: World loaded successfully. Dimensions: "
@@ -56,7 +58,7 @@ std::unique_ptr<World> WorldLoader::loadOrCreateWorld() {
         std::cout << "WorldLoader: World file not found. Will generate a new world '" << worldName << "'." << std::endl;
         needsGeneration = true;
         // Устанавливаем размеры по умолчанию
-        worldWidth = 64; worldHeight = 50; worldDepth = 64;
+        worldWidth = 16 * razmer; worldHeight = 50; worldDepth = 16 * razmer;
     }
 
     // 2. Генерируем данные, если нужно

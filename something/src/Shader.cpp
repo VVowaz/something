@@ -119,3 +119,11 @@ bool Shader::checkLinkErrors(GLuint program) {
     }
     return true;
 }
+
+void Shader::setVec3i(const std::string& name, const glm::ivec3& value) const {
+    if (ID != 0) glUniform3iv(glGetUniformLocation(ID, name.c_str()), 1, glm::value_ptr(value));
+}
+
+void Shader::setVec3i(const std::string& name, int x, int y, int z) const {
+    if (ID != 0) glUniform3i(glGetUniformLocation(ID, name.c_str()), x, y, z);
+}
