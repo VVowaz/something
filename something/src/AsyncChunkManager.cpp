@@ -12,95 +12,114 @@
 #include <memory> // Для std::shared_ptr
 
 // Конструктор
-AsyncChunkManager::AsyncChunkManager() : shutdownWorker(false) {
-    std::cout << "AsyncChunkManager created." << std::endl;
+// --- Конструктор ---
+// Определяет количество потоков
+AsyncChunkManager::AsyncChunkManager(unsigned int numThreads) : shutdownWorker(false) {
+    if (numThreads == 0) {
+        // Автоопределение: количество ядер CPU минус один (для главного потока)
+        numWorkerThreads = std::thread::hardware_concurrency();
+        if (numWorkerThreads > 1) {
+            numWorkerThreads -= 1; // Оставляем одно ядро для главного потока и ОС
+        }
+        if (numWorkerThreads == 0) {
+            numWorkerThreads = 1; // Минимум один рабочий поток
+        }
+    }
+    else {
+        numWorkerThreads = numThreads;
+    }
+    std::cout << "AsyncChunkManager created. Using " << numWorkerThreads << " worker thread(s)." << std::endl;
 }
 
-// Деструктор - вызывает stop() для корректного завершения потока
+// --- Деструктор ---
 AsyncChunkManager::~AsyncChunkManager() {
-    stop(); // Убедимся, что поток остановлен
+    stop();
     std::cout << "AsyncChunkManager destroyed." << std::endl;
 }
 
-// Запуск рабочего потока
+// --- Запуск Потоков ---
+// *** ИЗМЕНЕНО: Запускает несколько потоков ***
 void AsyncChunkManager::start(World& worldRef) {
-    if (meshWorkerThread.joinable()) {
-        std::cerr << "Warning: AsyncChunkManager::start called but worker thread is already running." << std::endl;
+    if (!workerThreads.empty()) {
+        std::cerr << "Warning: AsyncChunkManager::start called but worker threads are already running." << std::endl;
         return;
     }
-    std::cout << "AsyncChunkManager: Starting mesh worker thread..." << std::endl;
-    worldPtr = &worldRef; // Сохраняем указатель на мир
+    std::cout << "AsyncChunkManager: Starting " << numWorkerThreads << " mesh worker thread(s)..." << std::endl;
+    worldPtr = &worldRef;
     shutdownWorker = false;
-    meshWorkerThread = std::thread(&AsyncChunkManager::workerLoop, this); // Запускаем поток
-    std::cout << "AsyncChunkManager: Mesh worker thread started." << std::endl;
+    workerThreads.reserve(numWorkerThreads); // Резервируем место в векторе
+    for (unsigned int i = 0; i < numWorkerThreads; ++i) {
+        // Запускаем каждый поток, передавая ему указатель на метод workerLoop
+        workerThreads.emplace_back(&AsyncChunkManager::workerLoop, this);
+    }
+    std::cout << "AsyncChunkManager: Mesh worker threads started." << std::endl;
 }
 
-// Остановка рабочего потока
+// --- Остановка Потоков ---
+// *** ИЗМЕНЕНО: Останавливает все потоки ***
 void AsyncChunkManager::stop() {
-    if (meshWorkerThread.joinable()) {
-        std::cout << "AsyncChunkManager: Shutting down mesh worker thread..." << std::endl;
-        {
-            std::unique_lock<std::mutex> lock(queueMutex);
-            shutdownWorker = true; // Устанавливаем флаг
-        }
-        conditionVar.notify_all(); // Будим поток (или потоки, если их будет несколько)
-        meshWorkerThread.join();   // Дожидаемся завершения
-        std::cout << "AsyncChunkManager: Mesh worker thread stopped." << std::endl;
-        worldPtr = nullptr; // Сбрасываем указатель на мир
+    if (workerThreads.empty()) {
+        return; // Потоки не запущены
     }
+
+    std::cout << "AsyncChunkManager: Shutting down " << workerThreads.size() << " mesh worker thread(s)..." << std::endl;
+    {
+        std::unique_lock<std::mutex> lock(queueMutex);
+        shutdownWorker = true; // Устанавливаем флаг
+    }
+    conditionVar.notify_all(); // <<<--- Будим ВСЕ потоки
+
+    // Дожидаемся завершения каждого потока
+    for (auto& thread : workerThreads) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+    workerThreads.clear(); // Очищаем вектор потоков
+    worldPtr = nullptr;
+    std::cout << "AsyncChunkManager: Mesh worker threads stopped." << std::endl;
 }
 
-// Определение видимых чанков и постановка в очередь на мешинг
+// --- Обновление Загрузки Чанков ---
+// *** ИЗМЕНЕНО: Уведомляем все потоки ***
 void AsyncChunkManager::updateChunkLoading(const Camera& camera, const Renderer& renderer, World& world) {
-    if (!worldPtr || &world != worldPtr) {
-        std::cerr << "ERROR::CHUNK_MANAGER: World pointer mismatch or null in updateChunkLoading!" << std::endl;
-        return; // Защита
-    }
-
+    if (!worldPtr || &world != worldPtr) { /*...*/ return; }
     auto frustumPlanes = camera.getFrustumPlanes();
+    bool notified = false; // Флаг, чтобы уведомить только один раз
 
-    // Блокируем очереди и карту отслеживания
     std::unique_lock<std::mutex> queueLock(queueMutex);
     std::unique_lock<std::mutex> inQueueLock(chunkInQueueMutex);
 
-    // Итерируем по чанкам мира
     for (auto const& [chunkCoord, chunkPtr] : world.getChunks()) {
         if (!chunkPtr) continue;
 
-
-
-        // Проверяем видимость по фрустуму
-        // Используем isAABBInFrustum из Renderer (или можно скопировать его сюда)
         if (renderer.isAABBInFrustum(chunkPtr->getAABB(), frustumPlanes)) {
-
-            // Чанк виден. Проверяем, нужен ли меш и не в очереди ли он уже.
-            if (chunkPtr->isDataLoaded && // Генерируем, только если данные блока загружены!
-                (chunkPtr->needsMeshUpdate || !chunkPtr->hasMeshGPU) && // Нужна генерация или меша нет в GPU
-                !chunkPtr->isGeneratingMesh && // И он не генерируется прямо сейчас
-                chunkInMeshQueue.find(chunkCoord) == chunkInMeshQueue.end()) // И его нет в очереди
+            if (chunkPtr->isDataLoaded &&
+                (chunkPtr->needsMeshUpdate || !chunkPtr->hasMeshGPU) &&
+                !chunkPtr->isGeneratingMesh && // Проверяем флаг генерации
+                chunkInMeshQueue.find(chunkCoord) == chunkInMeshQueue.end())
             {
-                // Ставим в очередь на генерацию
                 meshQueue.push(chunkCoord);
-                chunkInMeshQueue[chunkCoord] = true; // Помечаем как добавленный в очередь
-
-                // std::cout << "DEBUG: Queued chunk (" << chunkCoord.x << "," << chunkCoord.y << ") for meshing." << std::endl;
-
-                // Уведомляем рабочий поток ПОСЛЕ разблокировки (или перед?)
-                // Лучше после, чтобы он сразу мог захватить мьютекс
-                queueLock.unlock();
-                inQueueLock.unlock();
-                conditionVar.notify_one(); // Будим один поток
-                queueLock.lock();     // Блокируем обратно для след. итерации
-                inQueueLock.lock();
+                chunkInMeshQueue[chunkCoord] = true;
+                notified = true; // Помечаем, что нужно разбудить потоки
             }
         }
         else {
-            // Чанк не виден. Опционально: выгрузка меша.
-            // chunkPtr->unloadMesh(); // Лучше делать по таймеру, чтобы избежать мерцания
+            // chunkPtr->unloadMesh(); // Выгрузка невидимых
         }
     }
-    // Мьютексы разблокируются автоматически
+
+    // Разблокируем мьютексы ДО уведомления
+    inQueueLock.unlock();
+    queueLock.unlock();
+
+    // Если добавили хотя бы одну задачу, будим все потоки
+    if (notified) {
+        conditionVar.notify_all(); // <<<--- Уведомляем ВСЕ потоки
+    }
 }
+
+
 
 // Загрузка готовых мешей в GPU (в главном потоке)
 void AsyncChunkManager::uploadReadyMeshes(World& world) {
@@ -146,104 +165,93 @@ void AsyncChunkManager::uploadReadyMeshes(World& world) {
 }
 
 
-// Рабочая функция потока мешинга
 void AsyncChunkManager::workerLoop() {
-    std::cout << "Mesh worker thread loop started." << std::endl;
+    // Получаем ID потока для отладки (опционально)
+    // std::cout << "Mesh worker thread [" << std::this_thread::get_id() << "] starting loop." << std::endl;
+
     while (true) {
         glm::ivec2 chunkCoordToProcess;
-        bool taskFound = false;
+        Chunk* chunkToProcess = nullptr; // Указатель на чанк для обработки
+        bool taskAcquired = false;       // Флаг, что поток успешно взял задачу
 
-        // --- Ожидание Задачи ---
+        // --- Ожидание и Взятие Задачи ---
         {
             std::unique_lock<std::mutex> lock(queueMutex);
             conditionVar.wait(lock, [this] {
                 return !meshQueue.empty() || shutdownWorker;
                 });
 
-            if (shutdownWorker) {
-                std::cout << "Mesh worker thread shutting down (flag detected)." << std::endl;
-                return; // Выход
-            }
+            if (shutdownWorker) return; // Выход по флагу
 
-            // Получаем задачу, если она есть
             if (!meshQueue.empty()) {
                 chunkCoordToProcess = meshQueue.front();
                 meshQueue.pop();
-                taskFound = true;
 
-                // Помечаем, что чанк в обработке (ставим флаг в самом чанке)
-                if (worldPtr) { // Убедимся, что указатель на мир валиден
-                    Chunk* chunk = worldPtr->getChunk(chunkCoordToProcess.x * Chunk::CHUNK_WIDTH, chunkCoordToProcess.y * Chunk::CHUNK_DEPTH);
-                    if (chunk) {
-                        bool expected = false;
-                        // Пытаемся атомарно установить флаг "генерируется"
-                        if (!chunk->isGeneratingMesh.compare_exchange_strong(expected, true)) {
-                            // Если флаг уже был true, значит другой поток (если их >1) или
-                            // предыдущая итерация уже обрабатывает - пропускаем
-                            std::cout << "Mesh worker: Chunk (" << chunkCoordToProcess.x << "," << chunkCoordToProcess.y << ") generation already in progress, skipping." << std::endl;
-                            taskFound = false; // Считаем, что задачи нет
-                            // Убираем из карты отслеживания очереди, т.к. задача не взята
-                            std::unique_lock<std::mutex> inQueueLock(chunkInQueueMutex);
-                            chunkInMeshQueue.erase(chunkCoordToProcess);
+                // Проверяем, не обрабатывается ли уже этот чанк и получаем указатель
+                {
+                    std::unique_lock<std::mutex> inQueueLock(chunkInQueueMutex);
+                    auto it = chunkInMeshQueue.find(chunkCoordToProcess);
+                    if (it != chunkInMeshQueue.end()) { // Если он все еще в очереди ожидания
+                        if (worldPtr) {
+                            chunkToProcess = worldPtr->getChunk(chunkCoordToProcess.x * Chunk::CHUNK_WIDTH, chunkCoordToProcess.y * Chunk::CHUNK_DEPTH);
+                            if (chunkToProcess) {
+                                bool expected = false;
+                                // Пытаемся атомарно захватить флаг isGeneratingMesh
+                                if (chunkToProcess->isGeneratingMesh.compare_exchange_strong(expected, true)) {
+                                    // Успешно захватили, задача наша!
+                                    taskAcquired = true;
+                                    // Можно УДАЛИТЬ из карты отслеживания очереди здесь,
+                                    // так как мы уже "взяли" задачу и пометили чанк флагом isGeneratingMesh
+                                    chunkInMeshQueue.erase(it);
+                                    // std::cout << "DEBUG: Worker [" << std::this_thread::get_id() << "] picked up chunk (" << chunkCoordToProcess.x << "," << chunkCoordToProcess.y << ")" << std::endl;
+                                }
+                                else {
+                                    // Кто-то другой уже обрабатывает, возвращаем задачу в очередь? Нет, просто пропускаем.
+                                    // std::cout << "DEBUG: Worker [" << std::this_thread::get_id() << "] skipped chunk (" << chunkCoordToProcess.x << "," << chunkCoordToProcess.y << ") - already generating." << std::endl;
+                                    // Не удаляем из chunkInMeshQueue, т.к. мы не взяли задачу
+                                    // Но нужно ли вернуть в meshQueue? Пока нет.
+                                    chunkInMeshQueue.erase(it); // Убираем, т.к. кто-то уже делает
+                                }
+                            }
+                            else {
+                                chunkInMeshQueue.erase(it); // Чанк не найден
+                            }
                         }
                         else {
-                            // Успешно захватили флаг isGeneratingMesh
-                            // std::cout << "DEBUG: Worker picked up chunk (" << chunkCoordToProcess.x << "," << chunkCoordToProcess.y << ")" << std::endl;
+                            chunkInMeshQueue.erase(it); // Мир не доступен
                         }
-                    }
-                    else {
-                        taskFound = false; // Чанк не найден, задачи нет
-                        // Убираем из карты отслеживания очереди
-                        std::unique_lock<std::mutex> inQueueLock(chunkInQueueMutex);
-                        chunkInMeshQueue.erase(chunkCoordToProcess);
-                    }
-                }
-                else {
-                    taskFound = false; // Нет мира, задачи нет
-                }
+                    } // else { // Значит, кто-то другой уже взял и убрал из карты - игнорируем }
+                } // Конец блокировки inQueueLock
             }
-        } // Мьютекс queueMutex разблокируется
+        } // Конец блокировки queueMutex
 
-        // Если не удалось взять задачу (например, уже генерируется), идем на след. итерацию
-        if (!taskFound) {
+        // Если не удалось взять задачу, идем спать дальше
+        if (!taskAcquired || !chunkToProcess) {
             continue;
         }
 
-        // --- Генерация Меша --- (Без блокировки)
+        // --- Генерация Меша --- (Без блокировки очередей)
         std::shared_ptr<MeshData> generatedData = nullptr;
-        Chunk* chunk = nullptr; // Нужен указатель для сброса флага isGeneratingMesh
-
-        if (worldPtr) {
-            chunk = worldPtr->getChunk(chunkCoordToProcess.x * Chunk::CHUNK_WIDTH, chunkCoordToProcess.y * Chunk::CHUNK_DEPTH);
-            if (chunk && chunk->isDataLoaded) { // Генерируем только если данные загружены
-                // std::cout << "DEBUG: Worker generating mesh data for (" << chunkCoordToProcess.x << "," << chunkCoordToProcess.y << ")" << std::endl;
-                generatedData = chunk->generateMeshInternalData(*worldPtr);
-                // Сбрасываем флаг isGeneratingMesh ПОСЛЕ генерации
-                //chunk->isGeneratingMesh = false; // Делаем это здесь
-            }
-            else if (chunk && !chunk->isDataLoaded) {
-                std::cerr << "Warning: Worker skipped mesh generation for chunk (" << chunkCoordToProcess.x << "," << chunkCoordToProcess.y << ") - data not loaded." << std::endl;
-                // chunk->isGeneratingMesh = false; // Сбрасываем флаг, т.к. генерации не было
-            }
-            else {
-                // Чанк не найден, isGeneratingMesh не устанавливался
-            }
+        if (chunkToProcess->isDataLoaded) { // Генерируем, только если данные загружены
+            generatedData = chunkToProcess->generateMeshInternalData(*worldPtr);
+        }
+        else {
+            // std::cerr << "Warning: Worker skipped mesh gen for chunk (" << chunkCoordToProcess.x << "," << chunkCoordToProcess.y << ") - data not loaded." << std::endl;
         }
 
-        // Сбрасываем флаг isGeneratingMesh независимо от результата генерации
-        if (chunk) {
-            chunk->isGeneratingMesh = false;
-        }
+        // Сбрасываем флаг isGeneratingMesh ПОСЛЕ генерации (или пропуска)
+        // Важно делать это до добавления в очередь готовых, чтобы главный поток
+        // мог снова поставить в очередь, если потребуется обновление.
+        chunkToProcess->isGeneratingMesh = false;
 
 
-        // --- Добавление результата в очередь готовых мешей ---
+        // --- Добавление результата в очередь готовых ---
         {
             std::unique_lock<std::mutex> lock(queueMutex);
-            // Добавляем результат (даже если generatedData == nullptr, чтобы главный поток убрал из очереди ожидания)
             readyMeshQueue.push({ chunkCoordToProcess, generatedData });
-            // std::cout << "DEBUG: Worker added result for (" << chunkCoordToProcess.x << "," << chunkCoordToProcess.y << ") to ready queue." << std::endl;
+            // std::cout << "DEBUG: Worker [" << std::this_thread::get_id() << "] added result for (" << chunkCoordToProcess.x << "," << chunkCoordToProcess.y << ") to ready queue." << std::endl;
         }
-        // Главный поток сам проверит очередь readyMeshQueue
+        // Не нужно будить главный поток, он сам проверяет readyMeshQueue
 
     } // Конец while(true)
 }

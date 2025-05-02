@@ -54,7 +54,7 @@ public:
 
     void markForMeshUpdate() { needsMeshUpdate = true; hasMeshGPU = false; } // —брасываем флаг GPU при пометке
 
-
+    float timeSinceLastVisible = 0.0f;
 private:
     int chunkXPos, chunkZPos;
     ChunkDataType blocks;

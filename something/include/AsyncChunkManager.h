@@ -1,73 +1,57 @@
 #pragma once
 
 #include <thread>
+#include <vector> // <<<--- Для std::vector<std::thread>
 #include <queue>
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
-#include <vector>
 #include <map>
-#include <memory> // Для shared_ptr
+#include <memory>
 #include <glm/glm.hpp>
-#include "MeshData.h" // Для MeshData
+#include "MeshData.h"
 
-// Структура для ключа карты (аналогичная той, что в World.h или Application.h)
 struct ivec2_less_acm {
-    bool operator()(const glm::ivec2& a, const glm::ivec2& b) const {
+    bool operator()(const glm::ivec2& a, const glm::ivec2& b) const { // <<<--- ПРОВЕРЬТЕ НАЛИЧИЕ 'const' ЗДЕСЬ
         if (a.x != b.x) return a.x < b.x;
-        return a.y < b.y; // y используется для Z координаты чанка
+        return a.y < b.y;
     }
 };
+class World; class Camera; class Chunk; class Renderer;
 
-// Прямые объявления
-class World;
-class Camera;
-class Chunk;
-class Renderer; // Нужен для Frustum Culling
-
-// Класс, управляющий асинхронной генерацией мешей чанков
 class AsyncChunkManager {
 public:
-    AsyncChunkManager();
-    ~AsyncChunkManager(); // Должен остановить поток
+    // Конструктор: принимает желаемое количество потоков
+    // (0 - автоопределение по ядрам CPU)
+    AsyncChunkManager(unsigned int numThreads = 0);
+    ~AsyncChunkManager();
 
-    // Запрещаем копирование и присваивание
     AsyncChunkManager(const AsyncChunkManager&) = delete;
     AsyncChunkManager& operator=(const AsyncChunkManager&) = delete;
 
-    // Запускает рабочий поток
-    // Передает указатель на мир, который будет использоваться воркером
+    // Запускает рабочие потоки
     void start(World& worldRef);
-
-    // Сигнализирует рабочему потоку об остановке и дожидается его завершения
+    // Останавливает все рабочие потоки
     void stop();
 
-    // Вызывается каждый кадр (например, из Application::update)
-    // Определяет, какие чанки нужно добавить в очередь на генерацию меша
     void updateChunkLoading(const Camera& camera, const Renderer& renderer, World& world);
-
-    // Вызывается каждый кадр (например, из Application::run или Application::update)
-    // Обрабатывает готовые меши из очереди и загружает их в GPU
     void uploadReadyMeshes(World& world);
 
 private:
-    // Указатель на объект мира (для доступа из рабочего потока)
-    // Важно: Время жизни worldPtr должно быть больше или равно времени жизни AsyncChunkManager
     World* worldPtr = nullptr;
 
-    // --- Ресурсы для управления потоком и очередями ---
-    std::thread meshWorkerThread;                     // Рабочий поток
-    std::queue<glm::ivec2> meshQueue;                 // Очередь координат чанков на генерацию
-    std::queue<std::pair<glm::ivec2, std::shared_ptr<MeshData>>> readyMeshQueue; // Очередь готовых данных меша
-    std::mutex queueMutex;                            // Мьютекс для защиты обеих очередей
-    std::condition_variable conditionVar;             // Условная переменная для пробуждения потока
-    std::atomic<bool> shutdownWorker = false;         // Флаг для остановки потока
-
-    // Множество для отслеживания чанков, УЖЕ находящихся в очереди на генерацию
-    // Ключ: координаты чанка, Значение: bool (просто для наличия ключа)
+    // --- Ресурсы для многопоточности ---
+    std::vector<std::thread> workerThreads;       // <<<--- Пул рабочих потоков
+    unsigned int numWorkerThreads = 1;            // <<<--- Количество потоков
+    // Очереди и синхронизация (без изменений)
+    std::queue<glm::ivec2> meshQueue;
+    std::queue<std::pair<glm::ivec2, std::shared_ptr<MeshData>>> readyMeshQueue;
+    std::mutex queueMutex;
+    std::condition_variable conditionVar;
+    std::atomic<bool> shutdownWorker = false;
     std::map<glm::ivec2, bool, ivec2_less_acm> chunkInMeshQueue;
-    std::mutex chunkInQueueMutex; // Мьютекс для защиты этого map
+    std::mutex chunkInQueueMutex;
 
-    // Рабочая функция потока (приватный метод)
+    // Рабочая функция (выполняется каждым потоком)
     void workerLoop();
 };

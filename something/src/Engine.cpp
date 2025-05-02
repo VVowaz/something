@@ -61,6 +61,11 @@ Engine::~Engine() {
 
 // --- Инициализация ---
 bool Engine::initialize() {
+    unsigned int numThreads = std::thread::hardware_concurrency();
+    if (numThreads > 1) numThreads -= 1;
+    if (numThreads == 0) numThreads = 1;
+    // Передаем количество потоков в конструктор
+    chunkManager = std::make_unique<AsyncChunkManager>(numThreads);
     std::cout << "Engine: Initializing..." << std::endl;
     try {
         if (!setupWindowAndInput()) { std::cerr << "Engine init failed: Window/Input setup." << std::endl; return false; }
@@ -327,10 +332,19 @@ void Engine::update(float deltaTime) {
         timeSinceLastUnloadCheck = 0.0f;
         if (world && camera && renderer && chunkManager) {
             auto frustumPlanes = camera->getFrustumPlanes(); int unloaded = 0;
+            const float meshUnloadTime = 10.0f;
             for (auto& [pos, chunkPtr] : world->getChunks()) {
-                if (chunkPtr && chunkPtr->getMesh() && renderer) {
+                if (chunkPtr && chunkPtr->getMesh()) { // Если есть меш
                     if (!renderer->isAABBInFrustum(chunkPtr->getAABB(), frustumPlanes)) {
-                        chunkPtr->unloadMesh(); unloaded++;
+                        // Чанк НЕ во фрустуме, увеличиваем таймер
+                        chunkPtr->timeSinceLastVisible += deltaTime; // Накапливаем время невидимости
+                        if (chunkPtr->timeSinceLastVisible >= meshUnloadTime) {
+                            chunkPtr->unloadMesh(); // Выгружаем только после таймаута
+                            unloaded++;
+                        }
+                    }
+                    else {
+                        chunkPtr->timeSinceLastVisible = 0.0f;
                     }
                 }
             }
