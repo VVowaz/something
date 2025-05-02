@@ -1,4 +1,4 @@
-﻿#include "Application.h"
+﻿#include "Engine.h"
 #include <iostream>      // For std::cerr, std::endl, std::cout
 #include <stdexcept>     // For std::exception
 #include <string>
@@ -8,7 +8,7 @@ const unsigned int SCR_HEIGHT = 1000;
 
 int main() {
     try {
-        Application app(SCR_WIDTH, SCR_HEIGHT, "Minecraft Clone (Structure)");
+        Engine app(SCR_WIDTH, SCR_HEIGHT, "Minecraft Clone (Structure)");
 
         if (!app.initialize()) {
             // English error message

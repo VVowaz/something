@@ -19,7 +19,9 @@ public:
     // Загружает данные мира из файла. Возвращает пустой вектор при ошибке.
     // Изменяет width, height, depth по ссылке.
     WorldDataStructure loadWorldData(const std::string& worldName, int& width, int& height, int& depth);
-
+    bool saveWorldData(const WorldDataStructure& worldData,
+        int width, int height, int depth,
+        const std::string& worldName) const;
     // Проверяет, существует ли файл мира
     bool worldExists(const std::string& worldName) const;
 

@@ -175,3 +175,75 @@ WorldDataStructure WorldStorage::loadWorldData(const std::string& worldName, int
     std::cout << "WorldStorage: World '" << worldName << "' loaded successfully (" << blocksRead << " blocks)." << std::endl;
     return loadedData; // Возвращаем загруженные данные
 }
+
+bool WorldStorage::saveWorldData(const WorldDataStructure& worldData,
+    int width, int height, int depth,
+    const std::string& worldName) const
+{
+    std::string filepath = getFilePath(worldName);
+    // Открываем для бинарной записи с перезаписью
+    std::ofstream outFile(filepath, std::ios::binary | std::ios::trunc);
+
+    if (!outFile.is_open()) {
+        std::cerr << "ERROR::WORLDSTORAGE::SAVEDATA: Failed to open file for writing: " << filepath << std::endl;
+        return false;
+    }
+
+    // 1. Проверка корректности переданных размеров и данных
+    if (width <= 0 || height <= 0 || depth <= 0 ||
+        worldData.empty() || worldData.size() != width ||
+        worldData[0].empty() || worldData[0].size() != height ||
+        worldData[0][0].empty() || worldData[0][0].size() != depth)
+    {
+        std::cerr << "ERROR::WORLDSTORAGE::SAVEDATA: Invalid dimensions or data provided for saving."
+            << " Expected (" << width << "," << height << "," << depth << ")"
+            << ", Data size (" << worldData.size() << ", ...)" << std::endl;
+        outFile.close();
+        return false;
+    }
+
+    // 2. Записываем размеры
+    outFile.write(reinterpret_cast<const char*>(&width), sizeof(width));
+    outFile.write(reinterpret_cast<const char*>(&height), sizeof(height));
+    outFile.write(reinterpret_cast<const char*>(&depth), sizeof(depth));
+
+    // 3. Записываем данные блоков
+    std::cout << "WorldStorage: Saving world data '" << worldName << "' (" << width << "x" << height << "x" << depth << ")..." << std::endl;
+    size_t blocksWritten = 0;
+    size_t totalBlocks = static_cast<size_t>(width) * height * depth;
+    for (int x = 0; x < width; ++x) {
+        for (int z = 0; z < depth; ++z) { // Порядок Z/Y может влиять на кеш, но для простоты оставим Z внешним
+            for (int y = 0; y < height; ++y) {
+                // Проверка индексов перед доступом (на всякий случай, хотя размеры проверены)
+                if (x >= worldData.size() || y >= worldData[x].size() || z >= worldData[x][y].size()) {
+                    std::cerr << "ERROR::WORLDSTORAGE::SAVEDATA: Index out of bounds during write at (" << x << "," << y << "," << z << ")" << std::endl;
+                    // Можно записать Air или прервать сохранение
+                    BlockType air = BlockType::Air;
+                    outFile.write(reinterpret_cast<const char*>(&air), sizeof(BlockType));
+                }
+                else {
+                    BlockType type = worldData[x][y][z]; // Берем из переданной структуры
+                    outFile.write(reinterpret_cast<const char*>(&type), sizeof(BlockType));
+                }
+                blocksWritten++;
+            }
+        }
+        // Прогресс
+        if ((x + 1) % (width / 10 + 1) == 0) {
+            std::cout << "Saving progress: " << static_cast<int>((static_cast<float>(x + 1) / width) * 100) << "%" << std::endl;
+        }
+    }
+
+    outFile.close();
+
+    if (outFile.good() && blocksWritten == totalBlocks) {
+        std::cout << "WorldStorage: World data '" << worldName << "' saved successfully (" << blocksWritten << " blocks)." << std::endl;
+        return true;
+    }
+    else {
+        std::cerr << "ERROR::WORLDSTORAGE::SAVEDATA: Error during file write/close or block count mismatch. Written: " << blocksWritten << ", Expected: " << totalBlocks << std::endl;
+        // Можно попытаться удалить некорректный файл
+        // fs::remove(filepath);
+        return false;
+    }
+}
