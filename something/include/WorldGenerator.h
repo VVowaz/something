@@ -18,9 +18,6 @@ public:
     // *** НОВЫЙ МЕТОД: Получить тип блока для конкретной координаты ***
     BlockType getBlockTypeAt(int worldX, int worldY, int worldZ) const;
 
-
-
-
 private:
     int width, height, depth;
     SurfaceHeightFunction surfaceHeightFunction;

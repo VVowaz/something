@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <queue>
 #include <memory> // Для std::shared_ptr
+#include <set>
 
 // Конструктор
 AsyncChunkManager::AsyncChunkManager() : shutdownWorker(false) {
@@ -50,57 +51,6 @@ void AsyncChunkManager::stop() {
     }
 }
 
-// Определение видимых чанков и постановка в очередь на мешинг
-void AsyncChunkManager::updateChunkLoading(const Camera& camera, const Renderer& renderer, World& world) {
-    if (!worldPtr || &world != worldPtr) {
-        std::cerr << "ERROR::CHUNK_MANAGER: World pointer mismatch or null in updateChunkLoading!" << std::endl;
-        return; // Защита
-    }
-
-    auto frustumPlanes = camera.getFrustumPlanes();
-
-    // Блокируем очереди и карту отслеживания
-    std::unique_lock<std::mutex> queueLock(queueMutex);
-    std::unique_lock<std::mutex> inQueueLock(chunkInQueueMutex);
-
-    // Итерируем по чанкам мира
-    for (auto const& [chunkCoord, chunkPtr] : world.getChunks()) {
-        if (!chunkPtr) continue;
-
-
-
-        // Проверяем видимость по фрустуму
-        // Используем isAABBInFrustum из Renderer (или можно скопировать его сюда)
-        if (renderer.isAABBInFrustum(chunkPtr->getAABB(), frustumPlanes)) {
-
-            // Чанк виден. Проверяем, нужен ли меш и не в очереди ли он уже.
-            if (chunkPtr->isDataLoaded && // Генерируем, только если данные блока загружены!
-                (chunkPtr->needsMeshUpdate || !chunkPtr->hasMeshGPU) && // Нужна генерация или меша нет в GPU
-                !chunkPtr->isGeneratingMesh && // И он не генерируется прямо сейчас
-                chunkInMeshQueue.find(chunkCoord) == chunkInMeshQueue.end()) // И его нет в очереди
-            {
-                // Ставим в очередь на генерацию
-                meshQueue.push(chunkCoord);
-                chunkInMeshQueue[chunkCoord] = true; // Помечаем как добавленный в очередь
-
-                // std::cout << "DEBUG: Queued chunk (" << chunkCoord.x << "," << chunkCoord.y << ") for meshing." << std::endl;
-
-                // Уведомляем рабочий поток ПОСЛЕ разблокировки (или перед?)
-                // Лучше после, чтобы он сразу мог захватить мьютекс
-                queueLock.unlock();
-                inQueueLock.unlock();
-                conditionVar.notify_one(); // Будим один поток
-                queueLock.lock();     // Блокируем обратно для след. итерации
-                inQueueLock.lock();
-            }
-        }
-        else {
-            // Чанк не виден. Опционально: выгрузка меша.
-            // chunkPtr->unloadMesh(); // Лучше делать по таймеру, чтобы избежать мерцания
-        }
-    }
-    // Мьютексы разблокируются автоматически
-}
 
 // Загрузка готовых мешей в GPU (в главном потоке)
 void AsyncChunkManager::uploadReadyMeshes(World& world) {
@@ -145,12 +95,140 @@ void AsyncChunkManager::uploadReadyMeshes(World& world) {
     // Мьютекс разблокируется
 }
 
+// --- Обновление Загрузки/Видимости Чанков ---
+void AsyncChunkManager::updateChunkLoading(const Camera& camera, const Renderer& renderer, World& world) {
+    if (!worldPtr || &world != worldPtr) {
+        std::cerr << "ERROR::CHUNK_MANAGER: World pointer mismatch or null in updateChunkLoading!" << std::endl;
+        return;
+    }
 
-// Рабочая функция потока мешинга
+    // Параметры
+    const int loadDistance = 8;
+    const int unloadMargin = 2;
+    const int renderDistance = 6; // Должен быть <= loadDistance
+
+    // Текущий чанк камеры
+    glm::ivec2 cameraChunkPos = world.worldToChunkCoords(
+        static_cast<int>(std::floor(camera.Position.x)),
+        static_cast<int>(std::floor(camera.Position.z))
+    );
+
+    // Множества для отслеживания
+    std::set<glm::ivec2, ivec2_less_acm> requiredChunks; // Чанки, которые должны быть загружены
+    std::vector<glm::ivec2> chunksToQueueForMeshing; // Чанки, для которых нужно сгенерировать меш
+
+    auto frustumPlanes = camera.getFrustumPlanes(); // Получаем фрустум
+
+    // --- Фаза 1: Определение необходимых/видимых чанков и кандидатов на мешинг ---
+    // std::cout << "DEBUG: UpdateChunkLoading Phase 1 - Checking Chunks..." << std::endl;
+    for (int dz = -loadDistance; dz <= loadDistance; ++dz) {
+        for (int dx = -loadDistance; dx <= loadDistance; ++dx) {
+            glm::ivec2 currentChunkPos = cameraChunkPos + glm::ivec2(dx, dz);
+
+            // Проверяем, находится ли чанк в пределах мира (если мир ограничен)
+            if (currentChunkPos.x < 0 || currentChunkPos.x >= world.getChunkWidth() ||
+                currentChunkPos.y < 0 || currentChunkPos.y >= world.getChunkDepth()) { // Используем y для Z
+                continue; // Пропускаем чанки вне мира
+            }
+
+            // Этот чанк должен быть загружен
+            requiredChunks.insert(currentChunkPos);
+
+            // --- Загрузка чанка, если он еще не загружен ---
+            // loadChunk вернет указатель на существующий или только что созданный
+            Chunk* chunk = world.loadChunk(currentChunkPos.x, currentChunkPos.y); // <<<--- ВЫЗОВ LOADCHUNK
+            if (!chunk) {
+                std::cerr << "Warning: Failed to load/create chunk at (" << currentChunkPos.x << "," << currentChunkPos.y << ")" << std::endl;
+                continue; // Пропускаем, если не удалось создать/загрузить
+            }
+
+            // Проверяем, находится ли он в радиусе рендера
+            if (std::abs(dx) <= renderDistance && std::abs(dz) <= renderDistance) {
+                // Проверяем фрустум
+                if (renderer.isAABBInFrustum(chunk->getAABB(), frustumPlanes)) {
+                    // Чанк виден. Проверяем, нужен ли меш и не в очереди/генерации ли он.
+                    bool needs_mesh = chunk->isDataLoaded &&
+                        (chunk->needsMeshUpdate || !chunk->hasMeshGPU);
+                    bool is_generating = chunk->isGeneratingMesh.load();
+
+                    // Проверяем очередь ожидания (под своим мьютексом)
+                    bool in_queue = false;
+                    {
+                        std::unique_lock<std::mutex> inQueueLock(chunkInQueueMutex);
+                        in_queue = (chunkInMeshQueue.find(currentChunkPos) != chunkInMeshQueue.end());
+                    }
+
+                    // Отладочный вывод для видимых чанков
+                    // std::cout << "  Chunk(" << currentChunkPos.x << "," << currentChunkPos.y << "): "
+                    //           << "inFrustum=1"
+                    //           << ", dataLoaded=" << chunk->isDataLoaded.load() // Читаем актуальное значение
+                    //           << ", needsUpdate=" << chunk->needsMeshUpdate.load()
+                    //           << ", hasGPU=" << chunk->hasMeshGPU.load()
+                    //           << ", isGenerating=" << is_generating
+                    //           << ", inQueueMap=" << in_queue
+                    //           << " -> ShouldQueue=" << (needs_mesh && !is_generating && !in_queue) << std::endl;
+
+
+                    if (needs_mesh && !is_generating && !in_queue) {
+                        chunksToQueueForMeshing.push_back(currentChunkPos); // Добавляем кандидата на мешинг
+                    }
+                } // end if inFrustum
+            } // end if in renderDistance
+        } // end for dx
+    } // end for dz
+
+    // --- Фаза 2: Выгрузка ненужных чанков ---
+    std::vector<glm::ivec2> loadedChunkCoords;
+    // Получаем ключи ТОЛЬКО активных чанков
+    for (const auto& pair : world.getActiveChunks()) {
+        loadedChunkCoords.push_back(pair.first);
+    }
+    int unloadedCount = 0;
+    for (const auto& coord : loadedChunkCoords) {
+        // Если загруженный чанк НЕ входит в РАСШИРЕННЫЙ радиус загрузки
+        if (requiredChunks.find(coord) == requiredChunks.end()) {
+            if (std::abs(coord.x - cameraChunkPos.x) > loadDistance + unloadMargin ||
+                std::abs(coord.y - cameraChunkPos.y) > loadDistance + unloadMargin) {
+                world.unloadChunk(coord.x, coord.y); // Выгружаем
+                unloadedCount++;
+            }
+        }
+    }
+    if (unloadedCount > 0) std::cout << "DEBUG: Unloaded " << unloadedCount << " chunks." << std::endl;
+
+
+    // --- Фаза 3: Добавление в очередь и уведомление ---
+    if (!chunksToQueueForMeshing.empty()) {
+        bool needsNotify = false;
+        {
+            std::unique_lock<std::mutex> queueLock(queueMutex);
+            std::unique_lock<std::mutex> inQueueLock(chunkInQueueMutex);
+            // std::cout << "DEBUG: UpdateChunkLoading Phase 3 - Adding " << chunksToQueueForMeshing.size() << " chunks to mesh queue..." << std::endl;
+            for (const auto& coord : chunksToQueueForMeshing) {
+                // Повторно проверяем очередь и флаг генерации под мьютексом
+                if (chunkInMeshQueue.find(coord) == chunkInMeshQueue.end()) {
+                    Chunk* chunk = world.getChunk(coord.x * Chunk::CHUNK_WIDTH, coord.y * Chunk::CHUNK_DEPTH);
+                    if (chunk && !chunk->isGeneratingMesh.load()) {
+                        meshQueue.push(coord);
+                        chunkInMeshQueue[coord] = true; // Помечаем как добавленный
+                        needsNotify = true;
+                        std::cout << "DEBUG: ACTUALLY Queued chunk (" << coord.x << "," << coord.y << ")" << std::endl;
+                    }
+                }
+            }
+        } // Мьютексы разблокируются
+
+        if (needsNotify) {
+            std::cout << "DEBUG: Notifying worker thread!" << std::endl;
+            conditionVar.notify_one(); // Будим воркер
+        }
+    }
+}
+
+
+// --- Рабочая функция потока мешинга --- (Без изменений в логике генерации)
+// Вызывает chunk->generateMeshInternalData(*worldPtr) для чанков из очереди
 void AsyncChunkManager::workerLoop() {
-    unsigned int numThreads = std::thread::hardware_concurrency();
-    if (numThreads > 1) numThreads -= 1; 
-    if (numThreads == 0) numThreads = 1;
     std::cout << "Mesh worker thread loop started." << std::endl;
     while (true) {
         glm::ivec2 chunkCoordToProcess;
@@ -159,94 +237,51 @@ void AsyncChunkManager::workerLoop() {
         // --- Ожидание Задачи ---
         {
             std::unique_lock<std::mutex> lock(queueMutex);
-            conditionVar.wait(lock, [this] {
-                return !meshQueue.empty() || shutdownWorker;
-                });
-
-            if (shutdownWorker) {
-                std::cout << "Mesh worker thread shutting down (flag detected)." << std::endl;
-                return; // Выход
-            }
-
-            // Получаем задачу, если она есть
+            conditionVar.wait(lock, [this] { return !meshQueue.empty() || shutdownWorker; });
+            if (shutdownWorker) { /* ... выход ... */ return; }
             if (!meshQueue.empty()) {
-                chunkCoordToProcess = meshQueue.front();
-                meshQueue.pop();
-                taskFound = true;
-
-                // Помечаем, что чанк в обработке (ставим флаг в самом чанке)
-                if (worldPtr) { // Убедимся, что указатель на мир валиден
-                    Chunk* chunk = worldPtr->getChunk(chunkCoordToProcess.x * Chunk::CHUNK_WIDTH, chunkCoordToProcess.y * Chunk::CHUNK_DEPTH);
-                    if (chunk) {
-                        bool expected = false;
-                        // Пытаемся атомарно установить флаг "генерируется"
-                        if (!chunk->isGeneratingMesh.compare_exchange_strong(expected, true)) {
-                            // Если флаг уже был true, значит другой поток (если их >1) или
-                            // предыдущая итерация уже обрабатывает - пропускаем
-                            std::cout << "Mesh worker: Chunk (" << chunkCoordToProcess.x << "," << chunkCoordToProcess.y << ") generation already in progress, skipping." << std::endl;
-                            taskFound = false; // Считаем, что задачи нет
-                            // Убираем из карты отслеживания очереди, т.к. задача не взята
-                            std::unique_lock<std::mutex> inQueueLock(chunkInQueueMutex);
-                            chunkInMeshQueue.erase(chunkCoordToProcess);
+                chunkCoordToProcess = meshQueue.front(); meshQueue.pop(); taskFound = true;
+                // Пометка чанка как обрабатываемого
+                {
+                    std::unique_lock<std::mutex> inQueueLock(chunkInQueueMutex);
+                    auto it = chunkInMeshQueue.find(chunkCoordToProcess);
+                    if (it != chunkInMeshQueue.end()) {
+                        Chunk* chunk = worldPtr ? worldPtr->getChunk(chunkCoordToProcess.x * Chunk::CHUNK_WIDTH, chunkCoordToProcess.y * Chunk::CHUNK_DEPTH) : nullptr;
+                        if (chunk) {
+                            bool expected = false;
+                            if (!chunk->isGeneratingMesh.compare_exchange_strong(expected, true)) {
+                                taskFound = false; // Задача уже выполняется
+                                // chunkInMeshQueue.erase(it); // Не убираем, пусть главный поток уберет после upload
+                            }
                         }
-                        else {
-                            // Успешно захватили флаг isGeneratingMesh
-                            // std::cout << "DEBUG: Worker picked up chunk (" << chunkCoordToProcess.x << "," << chunkCoordToProcess.y << ")" << std::endl;
-                        }
+                        else { taskFound = false; chunkInMeshQueue.erase(it); } // Чанка нет, убираем
                     }
-                    else {
-                        taskFound = false; // Чанк не найден, задачи нет
-                        // Убираем из карты отслеживания очереди
-                        std::unique_lock<std::mutex> inQueueLock(chunkInQueueMutex);
-                        chunkInMeshQueue.erase(chunkCoordToProcess);
-                    }
-                }
-                else {
-                    taskFound = false; // Нет мира, задачи нет
+                    else { taskFound = false; /* Не должно быть */ }
                 }
             }
         } // Мьютекс queueMutex разблокируется
 
-        // Если не удалось взять задачу (например, уже генерируется), идем на след. итерацию
-        if (!taskFound) {
-            continue;
-        }
+        if (!taskFound) continue;
 
-        // --- Генерация Меша --- (Без блокировки)
+        // --- Генерация Меша ---
         std::shared_ptr<MeshData> generatedData = nullptr;
-        Chunk* chunk = nullptr; // Нужен указатель для сброса флага isGeneratingMesh
-
+        Chunk* chunk = nullptr;
         if (worldPtr) {
             chunk = worldPtr->getChunk(chunkCoordToProcess.x * Chunk::CHUNK_WIDTH, chunkCoordToProcess.y * Chunk::CHUNK_DEPTH);
-            if (chunk && chunk->isDataLoaded) { // Генерируем только если данные загружены
-                // std::cout << "DEBUG: Worker generating mesh data for (" << chunkCoordToProcess.x << "," << chunkCoordToProcess.y << ")" << std::endl;
-                generatedData = chunk->generateMeshInternalData(*worldPtr);
-                // Сбрасываем флаг isGeneratingMesh ПОСЛЕ генерации
-                //chunk->isGeneratingMesh = false; // Делаем это здесь
+            if (chunk && chunk->isDataLoaded) {
+                generatedData = chunk->generateMeshInternalData(*worldPtr); // Генерация
             }
-            else if (chunk && !chunk->isDataLoaded) {
-                std::cerr << "Warning: Worker skipped mesh generation for chunk (" << chunkCoordToProcess.x << "," << chunkCoordToProcess.y << ") - data not loaded." << std::endl;
-                // chunk->isGeneratingMesh = false; // Сбрасываем флаг, т.к. генерации не было
-            }
-            else {
-                // Чанк не найден, isGeneratingMesh не устанавливался
-            }
+            else if (chunk && !chunk->isDataLoaded) { /* ... предупреждение ... */ }
+            // Сбрасываем флаг isGeneratingMesh независимо от результата
+            if (chunk) { chunk->isGeneratingMesh = false; }
         }
 
-        // Сбрасываем флаг isGeneratingMesh независимо от результата генерации
-        if (chunk) {
-            chunk->isGeneratingMesh = false;
-        }
-
-
-        // --- Добавление результата в очередь готовых мешей ---
+        // --- Добавление результата в очередь ---
         {
             std::unique_lock<std::mutex> lock(queueMutex);
-            // Добавляем результат (даже если generatedData == nullptr, чтобы главный поток убрал из очереди ожидания)
             readyMeshQueue.push({ chunkCoordToProcess, generatedData });
-            // std::cout << "DEBUG: Worker added result for (" << chunkCoordToProcess.x << "," << chunkCoordToProcess.y << ") to ready queue." << std::endl;
         }
-        // Главный поток сам проверит очередь readyMeshQueue
+        // Главный поток сам обработает readyMeshQueue и уберет из chunkInMeshQueue
 
     } // Конец while(true)
 }

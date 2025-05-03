@@ -24,10 +24,6 @@ public:
     Chunk(const Chunk&) = delete; Chunk& operator=(const Chunk&) = delete;
     Chunk(Chunk&&) = default; Chunk& operator=(Chunk&&) = default;
 
-    BlockType getBlock(int localX, int localY, int localZ) const;
-    void setBlock(int localX, int localY, int localZ, BlockType type);
-    void fillChunkData(const WorldDataStructure& worldData, int worldWidth, int worldDepth);
-
     int getChunkX() const { return chunkXPos; }
     int getChunkZ() const { return chunkZPos; }
     glm::ivec3 getMinWorldPos() const;
@@ -57,7 +53,6 @@ public:
 
 private:
     int chunkXPos, chunkZPos;
-    ChunkDataType blocks;
     std::unique_ptr<Mesh> chunkMesh; // Хранит OpenGL буферы
     // bool needsMeshUpdate; // Заменено на atomic
     AABB boundingBox;

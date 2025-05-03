@@ -17,3 +17,13 @@ inline std::string readFile(const std::string& filepath) {
     file.close();
     return buffer.str();
 }
+
+// Функтор сравнения для использования glm::ivec3 в качестве ключа std::map
+struct ivec3_less {
+    bool operator()(const glm::ivec3& a, const glm::ivec3& b) const {
+        // Сравниваем последовательно по компонентам X, Y, Z
+        if (a.x != b.x) return a.x < b.x;
+        if (a.y != b.y) return a.y < b.y;
+        return a.z < b.z;
+    }
+};

@@ -1,6 +1,7 @@
 #include "WorldStorage.h"
 #include "World.h"  // Нужно для доступа к методам World при сохранении
 #include "Chunk.h"  // Нужно для доступа к размерам чанка
+#include "DeltaStorage.h"
 #include <filesystem> // Для работы с путями и проверки существования файла (C++17)
 #include <fstream>
 #include <iostream>
@@ -40,140 +41,162 @@ bool WorldStorage::worldExists(const std::string& worldName) const {
     return fs::exists(getFilePath(worldName));
 }
 
-bool WorldStorage::saveWorld(const World& world, const std::string& worldName) const {
+bool WorldStorage::saveDelta(const DeltaStorage& delta, const std::string& worldName) const {
     std::string filepath = getFilePath(worldName);
-    // Открываем файл для бинарной записи, перезаписывая содержимое (trunc)
     std::ofstream outFile(filepath, std::ios::binary | std::ios::trunc);
 
     if (!outFile.is_open()) {
-        std::cerr << "ERROR::WORLDSTORAGE::SAVE: Failed to open file for writing: " << filepath << std::endl;
+        std::cerr << "ERROR::WORLDSTORAGE::SAVEDELTA: Failed to open file for writing: " << filepath << std::endl;
         return false;
     }
 
-    // 1. Получаем размеры мира
-    int width = world.getWidth();
-    int height = world.getHeight();
-    int depth = world.getDepth();
+    std::cout << "WorldStorage: Saving delta for world '" << worldName << "'..." << std::endl;
 
-    if (width <= 0 || height <= 0 || depth <= 0) {
-        std::cerr << "ERROR::WORLDSTORAGE::SAVE: Invalid world dimensions (" << width << "," << height << "," << depth << "), cannot save." << std::endl;
+    try {
+        // 1. Записываем магическое число и версию
+        outFile.write(reinterpret_cast<const char*>(&DELTA_MAGIC_NUMBER), sizeof(DELTA_MAGIC_NUMBER));
+        outFile.write(reinterpret_cast<const char*>(&DELTA_FILE_VERSION), sizeof(DELTA_FILE_VERSION));
+
+        // 2. Получаем карту изменений и записываем ее размер
+        const auto& changes = delta.getAllChanges();
+        size_t changeCount = changes.size();
+        outFile.write(reinterpret_cast<const char*>(&changeCount), sizeof(changeCount));
+
+        std::cout << "WorldStorage: Writing " << changeCount << " changes..." << std::endl;
+
+        // 3. Записываем каждую пару ключ-значение (координаты и тип блока)
+        for (const auto& [pos, type] : changes) {
+            // Записываем координаты (3 * int)
+            outFile.write(reinterpret_cast<const char*>(&pos.x), sizeof(pos.x));
+            outFile.write(reinterpret_cast<const char*>(&pos.y), sizeof(pos.y));
+            outFile.write(reinterpret_cast<const char*>(&pos.z), sizeof(pos.z));
+            // Записываем тип блока (enum class, обычно sizeof(int) или sizeof(underlying_type))
+            // Приведем к базовому типу для надежности (например, uint8_t)
+            auto underlyingType = static_cast<std::underlying_type_t<BlockType>>(type);
+            outFile.write(reinterpret_cast<const char*>(&underlyingType), sizeof(underlyingType));
+
+            // Проверяем ошибки записи после каждой итерации (опционально, но надежно)
+            if (outFile.fail()) {
+                std::cerr << "ERROR::WORLDSTORAGE::SAVEDELTA: Failed to write change for block at ("
+                    << pos.x << "," << pos.y << "," << pos.z << ")" << std::endl;
+                outFile.close();
+                return false;
+            }
+        }
+
+    }
+    catch (const std::exception& e) {
+        std::cerr << "ERROR::WORLDSTORAGE::SAVEDELTA: Exception during saving: " << e.what() << std::endl;
         outFile.close();
         return false;
     }
 
-    // 2. Записываем размеры в начало файла
-    outFile.write(reinterpret_cast<const char*>(&width), sizeof(width));
-    outFile.write(reinterpret_cast<const char*>(&height), sizeof(height));
-    outFile.write(reinterpret_cast<const char*>(&depth), sizeof(depth));
-
-    // 3. Записываем данные блоков (проходим по X, потом Z, потом Y для кеш-эффективности?)
-    // Или проходим по чанкам, а внутри по блокам чанка
-    std::cout << "WorldStorage: Saving world '" << worldName << "' (" << width << "x" << height << "x" << depth << ")..." << std::endl;
-    size_t blocksWritten = 0;
-    for (int x = 0; x < width; ++x) {
-        for (int z = 0; z < depth; ++z) {
-            // Можно оптимизировать, получая чанк один раз для столбца Z
-            // const Chunk* currentChunk = world.getChunk(x, z); // Получаем указатель на чанк
-            // if (!currentChunk) { /* Ошибка или пропуск? */ continue; }
-            // glm::ivec3 localBase = world.worldToLocalCoords(x, 0, z);
-
-            for (int y = 0; y < height; ++y) {
-                // BlockType type = currentChunk->getBlock(localBase.x, y, localBase.z); // Получаем из чанка
-                BlockType type = world.getBlockType(x, y, z); // Проще, но может быть медленнее
-                // Записываем тип блока (обычно 1 байт, если enum class : uint8_t)
-                outFile.write(reinterpret_cast<const char*>(&type), sizeof(BlockType));
-                blocksWritten++;
-            }
-        }
-        // Небольшой прогресс-индикатор
-        if ((x + 1) % (width / 10 + 1) == 0) {
-            std::cout << "Saving progress: " << static_cast<int>((static_cast<float>(x + 1) / width) * 100) << "%" << std::endl;
-        }
-    }
-
     outFile.close();
 
-    if (outFile.good()) { // Проверяем, не было ли ошибок при записи/закрытии
-        std::cout << "WorldStorage: World '" << worldName << "' saved successfully (" << blocksWritten << " blocks)." << std::endl;
+    if (outFile.good()) {
+        std::cout << "WorldStorage: Delta for world '" << worldName << "' saved successfully." << std::endl;
         return true;
     }
     else {
-        std::cerr << "ERROR::WORLDSTORAGE::SAVE: Error occurred during file write/close: " << filepath << std::endl;
+        std::cerr << "ERROR::WORLDSTORAGE::SAVEDELTA: Error occurred during file write/close: " << filepath << std::endl;
         return false;
     }
 }
 
-WorldDataStructure WorldStorage::loadWorldData(const std::string& worldName, int& width, int& height, int& depth) {
+
+// *** НОВАЯ РЕАЛИЗАЦИЯ: loadDelta ***
+DeltaStorage WorldStorage::loadDelta(const std::string& worldName) {
     std::string filepath = getFilePath(worldName);
-    width = 0; height = 0; depth = 0; // Сбрасываем размеры
-    WorldDataStructure loadedData; // Пустой вектор по умолчанию
+    DeltaStorage loadedDelta; // Создаем пустой объект дельты
 
     if (!worldExists(worldName)) {
-        std::cout << "WorldStorage: World file not found: " << filepath << std::endl;
-        return loadedData; // Возвращаем пустой вектор
+        std::cout << "WorldStorage: Delta file not found: " << filepath << ". Returning empty delta." << std::endl;
+        return loadedDelta; // Возвращаем пустую дельту
     }
 
     std::ifstream inFile(filepath, std::ios::binary);
     if (!inFile.is_open()) {
-        std::cerr << "ERROR::WORLDSTORAGE::LOAD: Failed to open file for reading: " << filepath << std::endl;
-        return loadedData;
+        std::cerr << "ERROR::WORLDSTORAGE::LOADDELTA: Failed to open file for reading: " << filepath << std::endl;
+        return loadedDelta; // Возвращаем пустую дельту
     }
 
-    std::cout << "WorldStorage: Loading world '" << worldName << "'..." << std::endl;
+    std::cout << "WorldStorage: Loading delta for world '" << worldName << "'..." << std::endl;
 
-    // 1. Читаем размеры
-    inFile.read(reinterpret_cast<char*>(&width), sizeof(width));
-    inFile.read(reinterpret_cast<char*>(&height), sizeof(height));
-    inFile.read(reinterpret_cast<char*>(&depth), sizeof(depth));
-
-    if (inFile.fail() || width <= 0 || height <= 0 || depth <= 0) {
-        std::cerr << "ERROR::WORLDSTORAGE::LOAD: Invalid dimensions read from file: (" << width << "," << height << "," << depth << ")" << std::endl;
-        inFile.close();
-        width = height = depth = 0; // Сбрасываем размеры
-        return loadedData; // Возвращаем пустой вектор
-    }
-
-    // 2. Подготавливаем структуру данных нужного размера
     try {
-        loadedData.resize(width, std::vector<std::vector<BlockType>>(height, std::vector<BlockType>(depth)));
-    }
-    catch (const std::bad_alloc& e) {
-        std::cerr << "ERROR::WORLDSTORAGE::LOAD: Failed to allocate memory for world data: " << e.what() << std::endl;
-        inFile.close();
-        width = height = depth = 0;
-        return WorldDataStructure(); // Возвращаем пустой вектор
-    }
+        // 1. Читаем и проверяем магическое число и версию
+        uint32_t magic;
+        uint16_t version;
+        inFile.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+        inFile.read(reinterpret_cast<char*>(&version), sizeof(version));
 
-    // 3. Читаем данные блоков
-    size_t blocksRead = 0;
-    size_t totalBlocks = static_cast<size_t>(width) * height * depth;
-    for (int x = 0; x < width; ++x) {
-        for (int z = 0; z < depth; ++z) {
-            for (int y = 0; y < height; ++y) {
-                BlockType type;
-                inFile.read(reinterpret_cast<char*>(&type), sizeof(BlockType));
-                if (inFile.fail()) {
-                    std::cerr << "ERROR::WORLDSTORAGE::LOAD: Failed to read block data at (" << x << "," << y << "," << z << "). File might be corrupted." << std::endl;
-                    inFile.close();
-                    width = height = depth = 0;
-                    return WorldDataStructure(); // Возвращаем пустой
-                }
-                loadedData[x][y][z] = type;
-                blocksRead++;
-            }
+        if (inFile.fail() || magic != DELTA_MAGIC_NUMBER) {
+            std::cerr << "ERROR::WORLDSTORAGE::LOADDELTA: Invalid magic number in file: " << filepath << std::endl;
+            inFile.close();
+            return loadedDelta;
         }
+        if (version != DELTA_FILE_VERSION) {
+            std::cerr << "Warning::WORLDSTORAGE::LOADDELTA: Mismatched file version (File: " << version
+                << ", Expected: " << DELTA_FILE_VERSION << ") in: " << filepath << ". Attempting to load anyway." << std::endl;
+            // Можно добавить обработку старых версий здесь
+        }
+
+        // 2. Читаем количество изменений
+        size_t changeCount = 0;
+        inFile.read(reinterpret_cast<char*>(&changeCount), sizeof(changeCount));
+        if (inFile.fail()) {
+            std::cerr << "ERROR::WORLDSTORAGE::LOADDELTA: Failed to read change count from file: " << filepath << std::endl;
+            inFile.close();
+            return loadedDelta;
+        }
+
+        std::cout << "WorldStorage: Reading " << changeCount << " changes..." << std::endl;
+
+        // 3. Читаем каждую запись изменения
+        for (size_t i = 0; i < changeCount; ++i) {
+            glm::ivec3 pos;
+            BlockType type;
+            // Используем базовый тип для чтения
+            std::underlying_type_t<BlockType> underlyingType;
+
+            // Читаем координаты
+            inFile.read(reinterpret_cast<char*>(&pos.x), sizeof(pos.x));
+            inFile.read(reinterpret_cast<char*>(&pos.y), sizeof(pos.y));
+            inFile.read(reinterpret_cast<char*>(&pos.z), sizeof(pos.z));
+            // Читаем тип блока
+            inFile.read(reinterpret_cast<char*>(&underlyingType), sizeof(underlyingType));
+
+            if (inFile.fail()) {
+                std::cerr << "ERROR::WORLDSTORAGE::LOADDELTA: Failed to read change record " << (i + 1) << " from file: " << filepath << std::endl;
+                inFile.close();
+                return DeltaStorage(); // Возвращаем пустую дельту при ошибке
+            }
+
+            // Преобразуем прочитанный тип обратно в BlockType
+            type = static_cast<BlockType>(underlyingType);
+
+            // Добавляем изменение в карту (используем setChange для возможной оптимизации)
+            // Для загрузки можно напрямую вставлять в map для скорости:
+            loadedDelta.changes[pos] = type; // Используем приватный доступ (или сделать loadChanges публичным)
+            // Если DeltaStorage не friend, нужен публичный метод вроде addLoadedChange
+        }
+
+    }
+    catch (const std::exception& e) {
+        std::cerr << "ERROR::WORLDSTORAGE::LOADDELTA: Exception during loading: " << e.what() << std::endl;
+        inFile.close();
+        return DeltaStorage(); // Возвращаем пустую
     }
 
     inFile.close();
 
-    if (blocksRead != totalBlocks) {
-        std::cerr << "ERROR::WORLDSTORAGE::LOAD: Read " << blocksRead << " blocks, expected " << totalBlocks << ". File might be incomplete." << std::endl;
-        width = height = depth = 0;
-        return WorldDataStructure(); // Возвращаем пустой
-    }
+    // Проверяем, не осталось ли непрочитанных данных (на всякий случай)
+    // inFile.peek(); // Попробовать прочитать еще байт
+    // if (!inFile.eof()) {
+    //     std::cerr << "Warning::WORLDSTORAGE::LOADDELTA: Extra data found at the end of file: " << filepath << std::endl;
+    // }
 
-    std::cout << "WorldStorage: World '" << worldName << "' loaded successfully (" << blocksRead << " blocks)." << std::endl;
-    return loadedData; // Возвращаем загруженные данные
+    std::cout << "WorldStorage: Delta for world '" << worldName << "' loaded successfully (" << loadedDelta.getChangeCount() << " changes)." << std::endl;
+    return loadedDelta; // Возвращаем загруженную дельту
 }
 
 bool WorldStorage::saveWorldData(const WorldDataStructure& worldData,

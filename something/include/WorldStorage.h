@@ -7,6 +7,7 @@
 #include <iostream> // Для ошибок
 
 class World; // Прямое объявление
+class DeltaStorage;
 
 class WorldStorage {
 public:
@@ -14,11 +15,11 @@ public:
     ~WorldStorage();
 
     // Сохраняет текущее состояние мира в файл
-    bool saveWorld(const World& world, const std::string& worldName) const;
+    bool saveDelta(const DeltaStorage& delta, const std::string& worldName) const;
 
     // Загружает данные мира из файла. Возвращает пустой вектор при ошибке.
     // Изменяет width, height, depth по ссылке.
-    WorldDataStructure loadWorldData(const std::string& worldName, int& width, int& height, int& depth);
+    DeltaStorage loadDelta(const std::string& worldName);
     bool saveWorldData(const WorldDataStructure& worldData,
         int width, int height, int depth,
         const std::string& worldName) const;
@@ -30,4 +31,6 @@ private:
 
     // Вспомогательный метод для получения полного пути к файлу
     std::string getFilePath(const std::string& worldName) const;
+    const uint32_t DELTA_MAGIC_NUMBER = 0x574F5244; // "WORD" в ASCII (Little Endian)
+    const uint16_t DELTA_FILE_VERSION = 1;
 };

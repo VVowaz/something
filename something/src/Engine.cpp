@@ -59,30 +59,6 @@ Engine::~Engine() {
     cleanup();
 }
 
-// --- Инициализация ---
-bool Engine::initialize() {
-    std::cout << "Engine: Initializing..." << std::endl;
-    try {
-        if (!setupWindowAndInput()) { std::cerr << "Engine init failed: Window/Input setup." << std::endl; return false; }
-        if (!setupOpenGL()) { std::cerr << "Engine init failed: OpenGL setup." << std::endl; return false; }
-        if (!loadWorld()) { std::cerr << "Engine init failed: World loading." << std::endl; return false; }
-        if (!setupGraphics()) { std::cerr << "Engine init failed: Graphics setup." << std::endl; return false; }
-        if (!setupCamera()) { std::cerr << "Engine init failed: Camera setup." << std::endl; return false; }
-        if (!setupDebugging()) { std::cerr << "Engine init failed: Debugging setup." << std::endl; return false; }
-        if (!startAsyncManagers()) { std::cerr << "Engine init failed: Async managers start." << std::endl; return false; }
-
-    }
-    catch (const std::exception& e) {
-        std::cerr << "FATAL ERROR during Engine initialization: " << e.what() << std::endl;
-        cleanup();
-        return false;
-    }
-
-    isInitialized = true;
-    std::cout << "Engine initialized successfully." << std::endl;
-    return true;
-}
-
 // --- Настройка Окна и Ввода ---
 bool Engine::setupWindowAndInput() {
     std::cout << "Engine: Setting up window and input..." << std::endl;
@@ -249,51 +225,6 @@ void Engine::setupGridData() {
     std::cout << "Engine: Grid VAO/VBO setup complete. Vertex count: " << gridVertexCount << std::endl;
 }
 
-
-// --- Главный цикл ---
-void Engine::run() {
-    if (!isInitialized) {
-        std::cerr << "ERROR: Cannot run uninitialized application." << std::endl;
-        return;
-    }
-    std::cout << "Engine: Starting main loop..." << std::endl;
-    float lastFrameTime = static_cast<float>(glfwGetTime());
-    float timeSinceLastUnloadCheck = 0.0f; const float unloadCheckInterval = 5.0f;
-
-    while (window && !window->shouldClose()) {
-        float currentFrameTime = static_cast<float>(glfwGetTime());
-        float deltaTime = currentFrameTime - lastFrameTime;
-        lastFrameTime = currentFrameTime;
-        const float maxDeltaTime = 0.1f;
-        if (deltaTime <= 0.0f) deltaTime = 0.016f;
-        if (deltaTime > maxDeltaTime) deltaTime = maxDeltaTime;
-
-        // 1. Ввод (ESC здесь, остальное в InputManager)
-        processInput(deltaTime);
-        if (inputManager && camera) {
-            // Передаем ссылку на Engine, чтобы InputManager мог менять флаги showGrid/showDebugAxes
-            inputManager->processInput(*this, *camera, deltaTime);
-        }
-
-        // 2. Обновление (Координаты + Задачи на мешинг)
-        update(deltaTime);
-
-        // 3. Обработка готовых мешей
-        if (chunkManager && world) {
-            // processReadyMeshes должен быть реализован в AsyncChunkManager
-            chunkManager->uploadReadyMeshes(*world);
-        }
-
-        // 4. Рендеринг
-        render();
-
-        // 5. Обмен буферов и события
-        if (window) { window->swapBuffers(); window->pollEvents(); }
-        else { break; }
-    }
-    std::cout << "Engine: Exiting main loop." << std::endl;
-}
-
 // --- Обработка Ввода (Только ESC) ---
 void Engine::processInput(float /*deltaTime*/) {
     if (!window) return;
@@ -301,121 +232,6 @@ void Engine::processInput(float /*deltaTime*/) {
         glfwSetWindowShouldClose(window->getGLFWwindow(), true);
     }
     // F3 обрабатывается в InputManager::processInput
-}
-
-// --- Обновление Состояния ---
-void Engine::update(float deltaTime) {
-    // 1. Рассчитываем целевой блок для подсветки
-    calculateTargetBlock();
-
-    // 2. Вывод координат (можно закомментировать)
-    if (camera && world) {
-        // ... (логика вывода координат, можно использовать this->highlightedBlock) ...
-        static float timeSincePrint = 0.0f; const float printInterval = 0.5f;
-        timeSincePrint += deltaTime;
-        if (timeSincePrint >= printInterval) {
-            timeSincePrint = 0.0f;
-            std::cout << std::fixed << std::setprecision(2)
-                << "Cam Pos: X=" << camera->Position.x << " Y=" << camera->Position.y << " Z=" << camera->Position.z;
-            if (isBlockHighlighted) { // Выводим только если блок подсвечен
-                std::cout << " | Target Block: (" << highlightedBlock.x << "," << highlightedBlock.y << "," << highlightedBlock.z << ")";
-            }
-            std::cout << std::endl;
-        }
-    }
-    // 1. Обновление видимости чанков и постановка в очередь мешинга
-    if (chunkManager && camera && renderer && world) {
-        // Передаем renderer для использования isAABBInFrustum
-        chunkManager->updateChunkLoading(*camera, *renderer, *world);
-    }
-
-    // 2. Вывод координат (остается здесь для примера)
-    if (camera && world) {
-        glm::vec3 camPos = camera->Position;
-        // ... (расчет targetBlock...) ...
-        static float timeSincePrint = 0.0f; const float printInterval = 0.5f;
-        timeSincePrint += deltaTime;
-        if (timeSincePrint >= printInterval) { /* ... вывод координат ... */ }
-    }
-
-    // 3. Выгрузка мешей (остается здесь для примера)
-    static float timeSinceLastUnloadCheck = 0.0f; const float unloadCheckInterval = 5.0f;
-    timeSinceLastUnloadCheck += deltaTime;
-    if (timeSinceLastUnloadCheck >= unloadCheckInterval) {
-        timeSinceLastUnloadCheck = 0.0f;
-        if (world && camera && renderer && chunkManager) {
-            auto frustumPlanes = camera->getFrustumPlanes(); int unloaded = 0;
-            for (auto& [pos, chunkPtr] : world->getChunks()) {
-                if (chunkPtr && chunkPtr->getMesh() && renderer) {
-                    if (!renderer->isAABBInFrustum(chunkPtr->getAABB(), frustumPlanes)) {
-                        chunkPtr->unloadMesh(); unloaded++;
-                    }
-                }
-            }
-            if (unloaded > 0) std::cout << "Engine: Unloaded " << unloaded << " chunk meshes." << std::endl;
-        }
-    }
-}
-
-// --- Рендеринг ---
-void Engine::render() {
-    if (!isInitialized || !renderer || !world || !camera || !blockShader || !lineShader) return;
-
-    renderer->prepareFrame();
-
-    glm::mat4 view = camera->getViewMatrix();
-    glm::mat4 projection = camera->getProjectionMatrix();
-    std::array<Plane, 6> frustumPlanes = camera->getFrustumPlanes();
-
-    // Рендеринг сетки
-    if (showGrid && gridVAO != 0) {
-        renderer->renderGrid(*lineShader, gridVAO, gridVertexCount, view, projection);
-    }
-
-    // Рендеринг мира - передаем информацию о подсветке
-    if (blockShader) {
-        // Устанавливаем uniforms подсветки ПЕРЕД вызовом renderWorld
-        blockShader->use(); // Активируем шейдер блоков
-        blockShader->setBool("highlightActive", isBlockHighlighted);
-        if (isBlockHighlighted) {
-            blockShader->setVec3i("highlightedBlockPos", highlightedBlock); // Используем setVec3i для ivec3
-        }
-        // Вызываем рендеринг мира (он внутри снова сделает use(), но uniforms уже установлены)
-        renderer->renderWorld(*world, *camera, *blockShader, frustumPlanes);
-    }
-
-    // Рендеринг отладочных осей
-    if (showDebugAxes && debugAxesVAO != 0) {
-        renderer->renderDebugInfo(*camera, *lineShader, debugAxesVAO, debugAxesVertexCount);
-    }
-}
-
-// --- Освобождение ресурсов ---
-void Engine::cleanup() {
-    std::cout << "Engine: Cleaning up..." << std::endl;
-    // 1. Остановить менеджеры
-    if (chunkManager) chunkManager->stop();
-    // 2. Сохранить мир
-    if (isInitialized && world && worldLoader) {
-        if (!worldLoader->saveWorld(*world)) { /*...*/ }
-    }
-    // 3. Удалить OpenGL ресурсы
-    std::cout << "Engine: Deleting OpenGL resources..." << std::endl;
-    if (gridVBO != 0) glDeleteBuffers(1, &gridVBO); if (gridVAO != 0) glDeleteVertexArrays(1, &gridVAO);
-    if (debugAxesVBO != 0) glDeleteBuffers(1, &debugAxesVBO); if (debugAxesVAO != 0) glDeleteVertexArrays(1, &debugAxesVAO);
-    gridVAO = gridVBO = debugAxesVAO = debugAxesVBO = 0; // Обнуляем для надежности
-    // 4. Очистить unique_ptr (порядок важен для зависимостей)
-    std::cout << "Engine: Resetting managers and components..." << std::endl;
-    chunkManager.reset(); // Останавливает поток перед удалением world
-    world.reset();
-    worldLoader.reset(); // Зависит от worldStorage
-    worldStorage.reset(); // Добавлено удаление, если он был членом Engine
-    lineShader.reset(); blockShader.reset(); renderer.reset(); camera.reset(); inputManager.reset();
-    window.reset(); // Удаляет контекст OpenGL
-    // 5. Завершить GLFW
-    if (glfwGetCurrentContext() != NULL) { glfwTerminate(); std::cout << "Engine: GLFW terminated." << std::endl; }
-    isInitialized = false;
-    std::cout << "Engine cleanup finished." << std::endl;
 }
 
 // --- Рабочая функция потока мешинга ---
@@ -577,4 +393,223 @@ void Engine::calculateTargetBlock() {
     if (!found) {
         isBlockHighlighted = false; // Ничего не нашли в пределах досягаемости
     }
+}
+
+bool Engine::initialize() {
+    std::cout << "Engine: Initializing..." << std::endl;
+    try {
+        // 1. Окно и Базовый Ввод
+        if (!setupWindowAndInput()) {
+            std::cerr << "Engine init failed: Window/Input setup." << std::endl; return false;
+        }
+        // 2. OpenGL
+        if (!setupOpenGL()) {
+            std::cerr << "Engine init failed: OpenGL setup." << std::endl; return false;
+        }
+        // 3. Загрузка/Создание Мира через WorldLoader
+        if (!loadWorld()) { // Этот метод теперь создает worldLoader и world
+            std::cerr << "Engine init failed: World loading/creation." << std::endl; return false;
+        }
+        // 4. Графика (Шейдеры)
+        if (!setupGraphics()) {
+            std::cerr << "Engine init failed: Graphics setup." << std::endl; return false;
+        }
+        // 5. Камера (Требует world и window)
+        if (!setupCamera()) {
+            std::cerr << "Engine init failed: Camera setup." << std::endl; return false;
+        }
+        // 6. Рендерер и Отладка (Требует world)
+        if (!setupDebugging()) {
+            std::cerr << "Engine init failed: Debugging setup." << std::endl; return false;
+        }
+        // 7. Асинхронные Менеджеры (Требует world)
+        if (!startAsyncManagers()) {
+            std::cerr << "Engine init failed: Async managers start." << std::endl; return false;
+        }
+
+    }
+    catch (const std::exception& e) {
+        std::cerr << "FATAL ERROR during Engine initialization: " << e.what() << std::endl;
+        cleanup();
+        return false;
+    }
+
+    isInitialized = true;
+    std::cout << "Engine initialized successfully." << std::endl;
+    return true;
+}
+
+// --- Главный цикл --- (Без изменений)
+void Engine::run() {
+    if (!isInitialized) { /* ... */ return; }
+    std::cout << "Engine: Starting main loop..." << std::endl;
+    float lastFrameTime = static_cast<float>(glfwGetTime());
+
+    while (window && !window->shouldClose()) {
+        float currentFrameTime = static_cast<float>(glfwGetTime());
+        float deltaTime = currentFrameTime - lastFrameTime;
+        lastFrameTime = currentFrameTime;
+        const float maxDeltaTime = 0.1f;
+        if (deltaTime <= 0.0f) deltaTime = 0.016f;
+        if (deltaTime > maxDeltaTime) deltaTime = maxDeltaTime;
+
+        // 1. Ввод (ESC здесь, остальное делегировано)
+        processInput(deltaTime);
+        if (inputManager && camera) {
+            inputManager->processInput(*this, *camera, deltaTime);
+        }
+
+        // 2. Обновление (Координаты, Задачи мешинга, Выгрузка)
+        update(deltaTime);
+
+        // 3. Обработка готовых мешей (Загрузка в GPU)
+        if (chunkManager && world) {
+            chunkManager->uploadReadyMeshes(*world);
+        }
+
+        // 4. Рендеринг
+        render();
+
+        // 5. Обмен буферов и события
+        if (window) { window->swapBuffers(); window->pollEvents(); }
+        else { break; }
+    }
+    std::cout << "Engine: Exiting main loop." << std::endl;
+}
+
+
+// --- Обновление Состояния ---
+void Engine::update(float deltaTime) {
+    // 1. Рассчитываем целевой блок для подсветки
+    calculateTargetBlock();
+
+    // 2. Вывод координат (опционально)
+    if (camera && world) {
+        // ... (код вывода координат) ...
+    }
+
+    // 3. Обновление видимости чанков и постановка в очередь мешинга
+    // Передаем не-const world, т.к. chunkManager может вызывать world->loadChunk
+    if (chunkManager && camera && renderer && world) {
+        chunkManager->updateChunkLoading(*camera, *renderer, *world);
+    }
+
+    // 4. Логика выгрузки невидимых мешей (по таймеру)
+    static float timeSinceLastUnloadCheck = 0.0f;
+    const float unloadCheckInterval = 5.0f; // Каждые 5 секунд
+    timeSinceLastUnloadCheck += deltaTime;
+    if (timeSinceLastUnloadCheck >= unloadCheckInterval) {
+        timeSinceLastUnloadCheck = 0.0f; // Сбрасываем таймер
+        if (world && camera && renderer && chunkManager) { // Проверяем все зависимости
+            // std::cout << "Engine: Checking for chunks to unload..." << std::endl;
+            auto frustumPlanes = camera->getFrustumPlanes();
+            int unloaded = 0;
+            // Получаем НЕ-const ссылку на карту активных чанков
+            auto& activeChunks = world->getActiveChunks();
+            // Итератор для безопасного удаления во время итерации (если бы мы удаляли здесь)
+            // Но мы вызываем world->unloadChunk, который сам удаляет из карты
+            std::vector<glm::ivec2> chunksToUnload; // Собираем кандидатов на выгрузку
+
+            for (const auto& [pos, chunkPtr] : activeChunks) {
+                if (chunkPtr && chunkPtr->getMesh()) { // Выгружаем только если есть меш
+                    // Проверяем, находится ли он ВНЕ фрустума
+                    if (!renderer->isAABBInFrustum(chunkPtr->getAABB(), frustumPlanes)) {
+                        // Можно добавить доп. проверку на расстояние, чтобы не выгружать слишком близкие
+                        chunksToUnload.push_back(pos);
+                    }
+                }
+            }
+            // Выгружаем собранных кандидатов
+            for (const auto& pos : chunksToUnload) {
+                world->unloadChunk(pos.x, pos.y); // Метод World удалит из activeChunks
+                unloaded++;
+            }
+
+            if (unloaded > 0) std::cout << "Engine: Unloaded " << unloaded << " chunk meshes." << std::endl;
+        }
+    }
+}
+
+// --- Рендеринг ---
+void Engine::render() {
+    // Проверка готовности
+    if (!isInitialized || !renderer || !world || !camera || !blockShader || !lineShader) return;
+
+    // Подготовка кадра
+    renderer->prepareFrame();
+
+    // Получаем данные камеры
+    glm::mat4 view = camera->getViewMatrix();
+    glm::mat4 projection = camera->getProjectionMatrix();
+    std::array<Plane, 6> frustumPlanes = camera->getFrustumPlanes();
+
+    // Рендеринг сетки
+    if (showGrid && gridVAO != 0) {
+        renderer->renderGrid(*lineShader, gridVAO, gridVertexCount, view, projection);
+    }
+
+    // Рендеринг мира (чанков)
+    if (blockShader) {
+        blockShader->use(); // Активируем шейдер перед установкой uniforms
+        blockShader->setBool("highlightActive", isBlockHighlighted);
+        if (isBlockHighlighted) {
+            blockShader->setVec3i("highlightedBlockPos", highlightedBlock);
+        }
+        // Передаем НЕ-const world, так как renderWorld теперь принимает World&
+        renderer->renderWorld(*world, *camera, *blockShader, frustumPlanes);
+    }
+
+    // Рендеринг отладочных осей
+    if (showDebugAxes && debugAxesVAO != 0) {
+        renderer->renderDebugInfo(*camera, *lineShader, debugAxesVAO, debugAxesVertexCount);
+    }
+}
+
+// --- Освобождение ресурсов ---
+void Engine::cleanup() {
+    std::cout << "Engine: Cleaning up..." << std::endl;
+
+    // 1. Остановить асинхронные менеджеры
+    if (chunkManager) {
+        chunkManager->stop(); // Дожидается завершения потока
+    }
+
+    // 2. Сохранить мир (используем worldLoader)
+    if (isInitialized && world && worldLoader) {
+        std::cout << "Engine: Saving world..." << std::endl;
+        if (!worldLoader->saveWorld(*world)) { // Передаем ссылку на мир
+            std::cerr << "Warning: Failed to save world during cleanup." << std::endl;
+        }
+    }
+    else {
+        std::cout << "Engine: Skipping world save (Engine not fully initialized or world/loader missing)." << std::endl;
+    }
+
+    // 3. Удалить ресурсы OpenGL
+    std::cout << "Engine: Deleting OpenGL resources..." << std::endl;
+    if (gridVBO != 0) { glDeleteBuffers(1, &gridVBO); gridVBO = 0; }
+    if (gridVAO != 0) { glDeleteVertexArrays(1, &gridVAO); gridVAO = 0; }
+    if (debugAxesVBO != 0) { glDeleteBuffers(1, &debugAxesVBO); debugAxesVBO = 0; }
+    if (debugAxesVAO != 0) { glDeleteVertexArrays(1, &debugAxesVAO); debugAxesVAO = 0; }
+
+    // 4. Очистить unique_ptr (порядок важен)
+    std::cout << "Engine: Resetting managers and components..." << std::endl;
+    chunkManager.reset(); // Должен быть остановлен ранее
+    world.reset();        // Должен быть сброшен до worldLoader
+    worldLoader.reset();  // Удаляет worldStorage внутри себя
+    lineShader.reset();
+    blockShader.reset();
+    renderer.reset();
+    camera.reset();
+    inputManager.reset();
+    window.reset();       // Уничтожает окно и контекст OpenGL
+
+    // 5. Завершить GLFW
+    if (glfwGetCurrentContext() != NULL) {
+        glfwTerminate();
+        std::cout << "Engine: GLFW terminated." << std::endl;
+    }
+    isInitialized = false; // Сбрасываем флаг
+
+    std::cout << "Engine cleanup finished." << std::endl;
 }
